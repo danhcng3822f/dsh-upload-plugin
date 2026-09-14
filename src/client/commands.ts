@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import {
   checkModelVision,
   generateFileDraftPrompt,
+  insertPromptIntoComposer,
   pickFileFromBrowser,
   uploadFileToWorkspace,
 } from './uploader.js'
@@ -15,27 +16,26 @@ export function registerVisionCommands(ctx: Context): void {
   // 1. Add photos command
   commandUi.register({
     name: 'photos',
-    description: 'Add photos (Upload ảnh vào workspace và yêu cầu model xem qua read_image)',
+    description: 'Add photos (Upload ảnh vào workspace và gọi tool read_image)',
     available: () => true,
     ui: {
       kind: 'popupSelect',
       options: async (session: any) => {
-        // Run vision check first
         const vision = await checkModelVision(session.sessionId)
         if (!vision.hasVision) {
           return [
             {
               id: 'unsupported',
-              label: '❌ Model hiện tại không hỗ trợ Vision (ảnh)',
-              detail: vision.reason ?? 'Vui lòng chọn model có modality image',
+              label: `❌ Model ${vision.model ?? ''} chưa bật tính năng xem ảnh`,
+              detail: vision.reason ?? 'Cần thêm input: [text, image] trong cấu hình model',
             },
           ]
         }
         return [
           {
             id: 'pick-photo',
-            label: '📷 Chọn ảnh từ máy tính để tải lên workspace',
-            detail: 'Hỗ trợ .png, .jpg, .jpeg, .webp, .gif',
+            label: `📷 Chọn ảnh từ máy tính (${vision.model ?? 'Vision'})`,
+            detail: 'Hỗ trợ .png, .jpg, .jpeg, .webp, .gif -> lưu vào uploads/',
           },
         ]
       },
@@ -52,6 +52,8 @@ export function registerVisionCommands(ctx: Context): void {
           if (uploadRes.ok && uploadRes.relativePath) {
             const prompt = generateFileDraftPrompt(uploadRes.relativePath, true)
             insertPromptIntoComposer(prompt)
+          } else {
+            alert(`Lỗi lưu ảnh: ${uploadRes.error ?? 'Unknown error'}`)
           }
         } catch (err: any) {
           alert(`Lỗi upload ảnh: ${err?.message ?? err}`)
@@ -71,7 +73,7 @@ export function registerVisionCommands(ctx: Context): void {
         {
           id: 'pick-file',
           label: '📄 Chọn file từ máy tính để tải lên workspace',
-          detail: 'Hỗ trợ mọi định dạng tệp (.txt, .pdf, .json, .csv, code...)',
+          detail: 'Hỗ trợ mọi định dạng tệp (.txt, .pdf, .json, .csv, code...) -> lưu vào uploads/',
         },
       ],
       onSelect: async (_option: any, session: any) => {
@@ -83,6 +85,8 @@ export function registerVisionCommands(ctx: Context): void {
           if (uploadRes.ok && uploadRes.relativePath) {
             const prompt = generateFileDraftPrompt(uploadRes.relativePath, false)
             insertPromptIntoComposer(prompt)
+          } else {
+            alert(`Lỗi lưu file: ${uploadRes.error ?? 'Unknown error'}`)
           }
         } catch (err: any) {
           alert(`Lỗi upload file: ${err?.message ?? err}`)
@@ -90,14 +94,4 @@ export function registerVisionCommands(ctx: Context): void {
       },
     },
   })
-}
-
-function insertPromptIntoComposer(prompt: string): void {
-  const textarea = document.querySelector('textarea[data-input-target], textarea') as HTMLTextAreaElement | null
-  if (textarea) {
-    const current = textarea.value
-    textarea.value = current ? `${current}\n${prompt}` : prompt
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    textarea.focus()
-  }
 }

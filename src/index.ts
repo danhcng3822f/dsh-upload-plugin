@@ -18,14 +18,13 @@ export function apply(ctx: Context): void {
         const url = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`)
         const sessionId = url.searchParams.get('sessionId')
 
-        // Resolve current session model via apiproxy / sessions if available
         let provider = url.searchParams.get('provider') ?? undefined
         let model = url.searchParams.get('model') ?? undefined
 
-        const sessions = ctx.get('sessions') as any
-        if (sessionId && sessions && typeof sessions.binding === 'function') {
-          const binding = sessions.binding(sessionId)
-          const config = binding?.session?.requestHeader?.()?.config
+        if ((!provider || !model) && sessionId) {
+          const sessions = ctx.get('sessions') as any
+          const session = sessions?.get?.(sessionId)
+          const config = session?.requestHeader?.()?.config
           if (config) {
             provider = provider ?? config.provider
             model = model ?? config.model
@@ -55,13 +54,32 @@ export function apply(ctx: Context): void {
         req.on('end', async () => {
           try {
             const payload = JSON.parse(body)
-            const { sessionId, fileName, fileBase64, isPhoto } = payload
+            const { sessionId, workspaceDir: explicitWs, fileName, fileBase64, isPhoto } = payload
 
-            let workspaceDir = process.cwd()
-            const workspaceRegistry = ctx.get('workspaceRegistry') as any
-            if (workspaceRegistry) {
-              const ws = workspaceRegistry.get?.(sessionId) ?? workspaceRegistry.current?.()
-              if (ws?.path) workspaceDir = ws.path
+            let workspaceDir = explicitWs
+            if (!workspaceDir) {
+              const workspaceRegistry = ctx.get('workspaceRegistry') as any
+              if (workspaceRegistry && typeof workspaceRegistry.list === 'function') {
+                const list = workspaceRegistry.list() as Array<{ id: string; path: string; sessionIds?: string[] }>
+                const matching = list.find(w => w.sessionIds?.includes(sessionId))
+                if (matching?.path) {
+                  workspaceDir = matching.path
+                } else if (list[0]?.path) {
+                  workspaceDir = list[0].path
+                }
+              }
+            }
+
+            // Fallback to session cwd or process cwd
+            if (!workspaceDir && sessionId) {
+              const sessions = ctx.get('sessions') as any
+              const session = sessions?.get?.(sessionId)
+              if (session?.header?.cwd) {
+                workspaceDir = session.header.cwd
+              }
+            }
+            if (!workspaceDir) {
+              workspaceDir = process.cwd()
             }
 
             const response = await handleUpload(workspaceDir, fileName, fileBase64, Boolean(isPhoto))
