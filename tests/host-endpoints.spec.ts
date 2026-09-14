@@ -43,6 +43,36 @@ describe('host endpoints', () => {
     }
   })
 
+  it('isolates uploads per session ID', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'dsh-upload-session-'))
+    try {
+      const b64A = Buffer.from('session A file').toString('base64')
+      const b64B = Buffer.from('session B file').toString('base64')
+
+      const resA = await handleUpload(tempDir, 'doc.txt', b64A, false, 'session-123')
+      const resB = await handleUpload(tempDir, 'doc.txt', b64B, false, 'session-456')
+
+      expect(resA.relativePath).toBe('uploads/session-123/doc.txt')
+      expect(resB.relativePath).toBe('uploads/session-456/doc.txt')
+
+      const listA = await handleListUploads(tempDir, 'session-123')
+      expect(listA.files.length).toBe(1)
+      expect(listA.files[0].relativePath).toBe('uploads/session-123/doc.txt')
+
+      const listB = await handleListUploads(tempDir, 'session-456')
+      expect(listB.files.length).toBe(1)
+      expect(listB.files[0].relativePath).toBe('uploads/session-456/doc.txt')
+
+      const viewA = await handleViewFile(tempDir, resA.relativePath!)
+      expect(viewA.buffer?.toString()).toBe('session A file')
+
+      const viewB = await handleViewFile(tempDir, resB.relativePath!)
+      expect(viewB.buffer?.toString()).toBe('session B file')
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it('lists uploaded files and views an uploaded file', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'dsh-upload-list-'))
     try {

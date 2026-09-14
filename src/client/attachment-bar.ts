@@ -38,31 +38,54 @@ export function saveMultipleSessionUploads(sessionId: string, items: SessionUplo
   }
 }
 
-let activeDraftAttachments: SessionUploadRecord[] = []
-let currentActiveSessionId = ''
+// Map storing active draft attachments per session ID
+const sessionDraftMap = new Map<string, SessionUploadRecord[]>()
+let lastActiveSessionId: string | null = null
 
-export function getDraftAttachments(): SessionUploadRecord[] {
-  return activeDraftAttachments
+export function detectActiveSessionId(): string | null {
+  const card = document.querySelector('[data-composer-card="true"]')
+  if (!card) return lastActiveSessionId
+
+  const key = Object.keys(card).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'))
+  if (key) {
+    let curr = (card as any)[key]
+    while (curr) {
+      if (curr.memoizedProps?.sessionId) return curr.memoizedProps.sessionId
+      if (typeof curr.key === 'string' && curr.key.startsWith('session-')) return curr.key
+      curr = curr.return
+    }
+  }
+
+  return lastActiveSessionId
+}
+
+export function getDraftAttachments(sessionId?: string): SessionUploadRecord[] {
+  const sid = sessionId ?? detectActiveSessionId()
+  if (!sid) return []
+  return sessionDraftMap.get(sid) ?? []
 }
 
 export function addDraftAttachments(sessionId: string, newItems: SessionUploadRecord[]): void {
-  if (currentActiveSessionId !== sessionId) {
-    activeDraftAttachments = []
-    currentActiveSessionId = sessionId
-  }
-  activeDraftAttachments = [...activeDraftAttachments, ...newItems]
+  lastActiveSessionId = sessionId
+  const current = sessionDraftMap.get(sessionId) ?? []
+  sessionDraftMap.set(sessionId, [...current, ...newItems])
   saveMultipleSessionUploads(sessionId, newItems)
-  renderAttachmentBar()
+  renderAttachmentBar(sessionId)
 }
 
 export function removeDraftAttachment(id: string): void {
-  activeDraftAttachments = activeDraftAttachments.filter(item => item.id !== id)
-  renderAttachmentBar()
+  const sid = detectActiveSessionId()
+  if (!sid) return
+
+  const current = sessionDraftMap.get(sid) ?? []
+  const updated = current.filter(item => item.id !== id)
+  sessionDraftMap.set(sid, updated)
+  renderAttachmentBar(sid)
 
   // Update composer prompt to match remaining attachments
   const textarea = document.querySelector('textarea[data-input-target], textarea') as HTMLTextAreaElement | null
   if (textarea) {
-    if (activeDraftAttachments.length === 0) {
+    if (updated.length === 0) {
       const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
       if (nativeSetter) {
         nativeSetter.call(textarea, '')
@@ -72,7 +95,7 @@ export function removeDraftAttachment(id: string): void {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     } else {
       const newPrompt = generateDraftPrompt(
-        activeDraftAttachments.map(a => ({ relativePath: a.relativePath, isPhoto: a.isPhoto }))
+        updated.map(a => ({ relativePath: a.relativePath, isPhoto: a.isPhoto }))
       )
       const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
       if (nativeSetter) {
@@ -85,9 +108,12 @@ export function removeDraftAttachment(id: string): void {
   }
 }
 
-export function clearDraftAttachments(): void {
-  activeDraftAttachments = []
-  renderAttachmentBar()
+export function clearDraftAttachments(sessionId?: string): void {
+  const sid = sessionId ?? detectActiveSessionId()
+  if (sid) {
+    sessionDraftMap.set(sid, [])
+  }
+  renderAttachmentBar(sid ?? undefined)
 }
 
 /**
@@ -341,15 +367,18 @@ export function openImageLightbox(imageUrl: string, title: string): void {
 
 /**
  * Render attachment rail directly inside [data-composer-card="true"]
- * so it looks completely native and identical to DeepSeek Chat's composer attachment rail.
+ * scoped strictly to the current session.
  */
-export function renderAttachmentBar(): void {
+export function renderAttachmentBar(targetSessionId?: string): void {
   ensureStylesInjected()
+
+  const sid = targetSessionId ?? detectActiveSessionId()
+  const attachments = sid ? (sessionDraftMap.get(sid) ?? []) : []
 
   const containerId = 'dsh-vision-attachments-rail'
   let container = document.getElementById(containerId)
 
-  if (activeDraftAttachments.length === 0) {
+  if (attachments.length === 0) {
     if (container) container.remove()
     return
   }
@@ -376,9 +405,8 @@ export function renderAttachmentBar(): void {
   const rail = document.createElement('div')
   rail.className = 'dsh-vision-rail'
 
-  for (const item of activeDraftAttachments) {
+  for (const item of attachments) {
     if (item.isPhoto && item.previewUrl) {
-      // Photo thumbnail card matching DeepSeek Chat 64x64px 16px radius
       const photoCard = document.createElement('div')
       photoCard.className = 'dsh-vision-item dsh-vision-item-photo'
 
@@ -393,7 +421,6 @@ export function renderAttachmentBar(): void {
       thumb.appendChild(img)
       photoCard.appendChild(thumb)
 
-      // Remove button with native close icon
       const removeBtn = document.createElement('button')
       removeBtn.className = 'dsh-vision-remove'
       removeBtn.title = `Bỏ ảnh ${item.name}`
@@ -406,7 +433,6 @@ export function renderAttachmentBar(): void {
 
       rail.appendChild(photoCard)
     } else {
-      // Document / file card matching 64px height and 16px radius
       const ext = item.name.includes('.') ? item.name.split('.').pop()!.toUpperCase() : 'FILE'
 
       const fileCard = document.createElement('div')
@@ -416,13 +442,11 @@ export function renderAttachmentBar(): void {
       cardInner.className = 'dsh-vision-file-card'
       cardInner.title = `${item.name} (${formatFileSize(item.size)})`
 
-      // File extension badge
       const badge = document.createElement('div')
       badge.className = 'dsh-vision-file-badge'
       badge.innerText = ext.slice(0, 4)
       cardInner.appendChild(badge)
 
-      // Meta info (name & size)
       const meta = document.createElement('div')
       meta.className = 'dsh-vision-file-meta'
       meta.innerHTML = `
@@ -432,7 +456,6 @@ export function renderAttachmentBar(): void {
       cardInner.appendChild(meta)
       fileCard.appendChild(cardInner)
 
-      // Remove button with native close icon
       const removeBtn = document.createElement('button')
       removeBtn.className = 'dsh-vision-remove'
       removeBtn.title = `Bỏ tệp ${item.name}`
@@ -448,4 +471,16 @@ export function renderAttachmentBar(): void {
   }
 
   container.appendChild(rail)
+}
+
+// Watch for session switches in the sidebar to re-render attachment rail for the newly active session
+if (typeof window !== 'undefined') {
+  let prevSessionId: string | null = null
+  setInterval(() => {
+    const currentSid = detectActiveSessionId()
+    if (currentSid !== prevSessionId) {
+      prevSessionId = currentSid
+      renderAttachmentBar(currentSid ?? undefined)
+    }
+  }, 250)
 }

@@ -1,5 +1,19 @@
 import type { AttachedItem, FileUploadResponse, UploadListResponse, VisionCheckResponse } from '../types.js'
 
+export function getSessionShortTag(sessionId: string): string {
+  if (!sessionId) return 'common'
+  return sessionId.replace(/^session-/, '').slice(0, 8)
+}
+
+export function cleanDisplayName(fileName: string): string {
+  return fileName.replace(/^session_[a-zA-Z0-9_-]+__/, '')
+}
+
+export function buildSessionUploadFileName(sessionId: string, fileName: string): string {
+  const tag = getSessionShortTag(sessionId)
+  return `session_${tag}__${fileName}`
+}
+
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -192,6 +206,7 @@ export async function uploadSingleFile(
 ): Promise<FileUploadResponse> {
   const readyFile = isPhoto ? await optimizeImageIfNeeded(file) : file
   const fileBase64 = await fileToBase64(readyFile)
+  const targetUploadName = buildSessionUploadFileName(sessionId, readyFile.name)
 
   const res = await fetch('/api/vision-plugin/upload', {
     method: 'POST',
@@ -199,7 +214,7 @@ export async function uploadSingleFile(
     body: JSON.stringify({
       sessionId,
       workspaceDir: workspaceDir ?? undefined,
-      fileName: readyFile.name,
+      fileName: targetUploadName,
       fileBase64,
       isPhoto,
     }),
@@ -233,7 +248,23 @@ export async function fetchUploadedFiles(
 
     const res = await fetch(`/api/vision-plugin/list?${query.toString()}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return await res.json()
+    const data = await res.json() as UploadListResponse
+    if (!data.ok || !Array.isArray(data.files)) return data
+
+    // Filter files strictly belonging to this session
+    const tag = getSessionShortTag(sessionId)
+    const sessionPrefix = `session_${tag}__`
+    const subfolderPrefix = `uploads/${sessionId}/`
+
+    const sessionFiles = data.files.filter(f => {
+      const base = f.name
+      return base.startsWith(sessionPrefix) || f.relativePath.startsWith(subfolderPrefix)
+    })
+
+    return {
+      ok: true,
+      files: sessionFiles,
+    }
   } catch (err: any) {
     return { ok: false, files: [], error: err?.message ?? 'Failed to list uploads' }
   }

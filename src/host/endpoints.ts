@@ -47,10 +47,15 @@ export async function handleUpload(
   workspaceDir: string,
   originalName: string,
   base64Data: string,
-  isPhoto: boolean
+  isPhoto: boolean,
+  sessionId?: string
 ): Promise<FileUploadResponse> {
   try {
-    const uploadsDir = join(workspaceDir, 'uploads')
+    const safeSessionId = sessionId ? sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') : ''
+    const uploadsDir = safeSessionId
+      ? join(workspaceDir, 'uploads', safeSessionId)
+      : join(workspaceDir, 'uploads')
+
     const targetPath = await resolveUniqueUploadPath(uploadsDir, originalName)
     const buffer = Buffer.from(base64Data, 'base64')
     await writeFile(targetPath, buffer)
@@ -73,9 +78,16 @@ export async function handleUpload(
   }
 }
 
-export async function handleListUploads(workspaceDir: string): Promise<UploadListResponse> {
+export async function handleListUploads(
+  workspaceDir: string,
+  sessionId?: string
+): Promise<UploadListResponse> {
   try {
-    const uploadsDir = join(workspaceDir, 'uploads')
+    const safeSessionId = sessionId ? sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') : ''
+    const uploadsDir = safeSessionId
+      ? join(workspaceDir, 'uploads', safeSessionId)
+      : join(workspaceDir, 'uploads')
+
     const entries = await readdir(uploadsDir, { withFileTypes: true }).catch(() => [])
     const files: UploadedFileInfo[] = []
 
@@ -85,13 +97,14 @@ export async function handleListUploads(workspaceDir: string): Promise<UploadLis
         const st = await stat(fullPath).catch(() => null)
         if (!st) continue
         const isPhoto = isSupportedPhotoExtension(entry.name)
+        const relPath = relative(workspaceDir, fullPath).replace(/\\/g, '/')
         files.push({
           name: entry.name,
-          relativePath: `uploads/${entry.name}`,
+          relativePath: relPath,
           size: st.size,
           mtime: Math.round(st.mtimeMs),
           isPhoto,
-          viewUrl: `/api/vision-plugin/view?file=${encodeURIComponent(`uploads/${entry.name}`)}`,
+          viewUrl: `/api/vision-plugin/view?file=${encodeURIComponent(relPath)}`,
         })
       }
     }

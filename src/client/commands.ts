@@ -9,6 +9,7 @@ import {
 } from './attachment-bar.js'
 import {
   checkModelVision,
+  cleanDisplayName,
   fetchUploadedFiles,
   fileToBase64,
   formatFileSize,
@@ -24,12 +25,12 @@ function bindComposerAutoClear(): void {
     (textarea as any).__dsh_vision_bound = true
     textarea.addEventListener('keydown', (e: any) => {
       if (e.key === 'Enter' && !e.shiftKey) {
-        setTimeout(clearDraftAttachments, 300)
+        setTimeout(() => clearDraftAttachments(), 300)
       }
     })
     const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"]')
     sendBtn?.addEventListener('click', () => {
-      setTimeout(clearDraftAttachments, 300)
+      setTimeout(() => clearDraftAttachments(), 300)
     })
   }
 }
@@ -92,10 +93,11 @@ export function registerVisionCommands(ctx: Context): void {
                 previewUrl = URL.createObjectURL(file)
               }
 
+              const displayName = cleanDisplayName(res.filename ?? file.name)
               records.push({
                 id: `${Date.now()}-${i}-${res.filename}`,
-                name: res.filename ?? file.name,
-                relativePath: res.relativePath ?? `uploads/${file.name}`,
+                name: displayName,
+                relativePath: res.relativePath ?? `uploads/${res.filename ?? file.name}`,
                 size: file.size,
                 isPhoto: true,
                 previewUrl,
@@ -146,10 +148,11 @@ export function registerVisionCommands(ctx: Context): void {
           if (successful.length > 0) {
             const records: SessionUploadRecord[] = successful.map((res, i) => {
               const file = files[i]
+              const displayName = cleanDisplayName(res.filename ?? file.name)
               return {
                 id: `${Date.now()}-${i}-${res.filename}`,
-                name: res.filename ?? file.name,
-                relativePath: res.relativePath ?? `uploads/${file.name}`,
+                name: displayName,
+                relativePath: res.relativePath ?? `uploads/${res.filename ?? file.name}`,
                 size: file.size,
                 isPhoto: false,
                 uploadedAt: Date.now(),
@@ -174,10 +177,10 @@ export function registerVisionCommands(ctx: Context): void {
     },
   })
 
-  // 3. Uploads list command (View all uploaded files in this session)
+  // 3. Uploads list command (View all uploaded files strictly in this session)
   commandUi.register({
     name: 'uploads',
-    description: 'Uploaded files (Xem danh sách các file/ảnh đã tải lên trong workspace)',
+    description: 'Uploaded files (Xem danh sách các file/ảnh đã tải lên trong session này)',
     available: () => true,
     ui: {
       kind: 'popupSelect',
@@ -194,7 +197,7 @@ export function registerVisionCommands(ctx: Context): void {
         for (const f of apiFiles) {
           map.set(f.relativePath, {
             id: f.relativePath,
-            name: f.name,
+            name: cleanDisplayName(f.name),
             relativePath: f.relativePath,
             size: f.size,
             isPhoto: f.isPhoto,
@@ -212,15 +215,15 @@ export function registerVisionCommands(ctx: Context): void {
           return [
             {
               id: 'empty',
-              label: '📂 Chưa có file hoặc ảnh nào trong thư mục uploads/',
-              detail: 'Dùng /photos hoặc /files để tải tệp lên workspace',
+              label: '📂 Chưa có file hoặc ảnh nào được tải lên trong session này',
+              detail: 'Dùng /photos hoặc /files để tải tệp vào session này',
             },
           ]
         }
 
         return combined.map(item => ({
           id: item.relativePath,
-          label: `${item.isPhoto ? '🖼️' : '📄'} ${item.name}`,
+          label: `${item.isPhoto ? '🖼️' : '📄'} ${cleanDisplayName(item.name)}`,
           detail: `${formatFileSize(item.size)} · ${item.relativePath}`,
           raw: item,
         }))
@@ -229,8 +232,9 @@ export function registerVisionCommands(ctx: Context): void {
         if (option.id === 'empty') return
 
         const item = option.raw as SessionUploadRecord
+        const displayName = cleanDisplayName(item.name)
         if (item?.isPhoto && item?.previewUrl) {
-          openImageLightbox(item.previewUrl, item.name)
+          openImageLightbox(item.previewUrl, displayName)
         }
 
         const prompt = item?.isPhoto

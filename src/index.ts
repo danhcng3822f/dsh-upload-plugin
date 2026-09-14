@@ -79,7 +79,13 @@ export function apply(ctx: Context): void {
             const { sessionId, workspaceDir: explicitWs, fileName, fileBase64, isPhoto } = payload
             const workspaceDir = resolveWorkspace(ctx, sessionId, explicitWs)
 
-            const response = await handleUpload(workspaceDir, fileName, fileBase64, Boolean(isPhoto))
+            const response = await handleUpload(
+              workspaceDir,
+              fileName,
+              fileBase64,
+              Boolean(isPhoto),
+              sessionId
+            )
             res.writeHead(200, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify(response))
           } catch (err: any) {
@@ -90,7 +96,7 @@ export function apply(ctx: Context): void {
       },
     })
 
-    // 3. Endpoint: List uploaded files in workspace
+    // 3. Endpoint: List uploaded files in workspace for specific session
     webServer.register({
       kind: 'prefix',
       path: '/api/vision-plugin/list',
@@ -100,7 +106,7 @@ export function apply(ctx: Context): void {
         const explicitWs = url.searchParams.get('workspaceDir') ?? undefined
         const workspaceDir = resolveWorkspace(ctx, sessionId, explicitWs)
 
-        const result = await handleListUploads(workspaceDir)
+        const result = await handleListUploads(workspaceDir, sessionId)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(result))
       },
