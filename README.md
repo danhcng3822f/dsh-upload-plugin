@@ -33,7 +33,23 @@ Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add p
 
 ## 🛠️ Cài đặt vào DeepSeek Harness
 
-### Cách 1: Liên kết cục bộ vào Web Profile (Khuyên dùng)
+### Cách 1: Cài đặt bằng 1 dòng lệnh duy nhất (Khuyên dùng)
+
+Mở terminal và chạy lệnh:
+
+```bash
+# Nếu dùng lệnh dsh:
+dsh plugin --profile web add github:danhcng3822f/dsh-upload-plugin
+
+# Hoặc nếu dùng pnpm trực tiếp:
+pnpm --prefix ~/.dsh/profiles/web add github:danhcng3822f/dsh-upload-plugin
+```
+
+> **Lưu ý:** DeepSeek Harness sẽ tự động nạp plugin vào profile `web`, tự động đăng ký vào danh sách `bundles` mà bạn **không cần phải chỉnh sửa file cấu hình bằng tay**. Sau đó chỉ cần khởi động lại DSH hoặc tải lại trang web `http://127.0.0.1:3080`.
+
+---
+
+### Cách 2: Cài đặt từ mã nguồn cục bộ (Dành cho Developer)
 
 1. Clone repository về máy tính:
 ```bash
@@ -43,34 +59,10 @@ pnpm install
 pnpm run build
 ```
 
-2. Mở file `package.json` trong profile web của DeepSeek Harness (ví dụ: `C:\Users\<User>\.dsh\profiles\web\package.json`).
-3. Thêm plugin vào mục `dependencies` và danh sách `bundles`:
-
-```json
-{
-  "name": "dsh-profile-web",
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-web-app",
-        "dsh-upload-plugin"
-      ]
-    }
-  },
-  "dependencies": {
-    "dsh-upload-plugin": "link:C:/path/to/dsh-upload-plugin"
-  }
-}
-```
-
-4. Chạy cài đặt trong thư mục profile:
+2. Chạy lệnh liên kết vào profile:
 ```bash
-cd C:\Users\<User>\.dsh\profiles\web
-pnpm install
+pnpm --prefix ~/.dsh/profiles/web add link:/duong/dan/toi/dsh-upload-plugin
 ```
-
-5. Khởi động lại DeepSeek Harness hoặc tải lại trang web `http://127.0.0.1:3080`.
 
 ---
 
