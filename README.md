@@ -1,27 +1,33 @@
-# DSH Vision Plugin (`dsh-vision-plugin`)
+# DSH Upload Plugin (`dsh-upload-plugin`)
 
-Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add photos** và **Add files** ngay trong menu dấu cộng (`+`) của khung chat, hỗ trợ các model từ Custom Provider xem ảnh và đọc tài liệu/file.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add photos**, **Add files** và **Uploaded files** trực tiếp trong menu dấu cộng (`+`) trên thanh chat, hỗ trợ các model từ Custom Provider xem ảnh (Vision) và đọc tài liệu/tệp tin theo từng session một cách chuyên nghiệp.
 
 ---
 
 ## 🌟 Tính năng nổi bật
 
 1. **Menu Dấu cộng (`+`) trên Chat UI**:
-   - Thêm lựa chọn **Add photos** (`/photos`): Tải ảnh từ máy tính lên workspace và hướng dẫn model gọi tool `read_image`.
-   - Thêm lựa chọn **Add files** (`/files`): Tải mọi tài liệu/tệp tin từ máy tính lên workspace và hướng dẫn model đọc file bằng tool `read`.
+   - **📷 Add photos (`/photos`)**: Cho phép chọn **một hoặc nhiều ảnh cùng lúc** (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`), tải lên workspace và tự động chèn prompt hướng dẫn model gọi tool `read_image`.
+   - **📄 Add files (`/files`)**: Cho phép chọn **một hoặc nhiều tệp/tài liệu cùng lúc** (`.txt`, `.pdf`, `.json`, `.csv`, code, zip...), tải lên workspace và tự động chèn prompt hướng dẫn model đọc file bằng tool `read`.
+   - **📂 Uploaded files (`/uploads`)**: Xem lại toàn bộ danh sách các tệp tin/hình ảnh đã tải lên trong phiên chat hiện tại và bấm để xem lại hoặc phân tích lại.
 
-2. **Kiểm tra chặt chẽ Vision Capability**:
-   - Tính năng **Add photos** tự động kiểm tra model hiện tại có hỗ trợ modality `image` hay không.
-   - Nếu model thuần text: cảnh báo trực tiếp người dùng và không cho chọn ảnh, ngăn ngừa lỗi model không xem được ảnh.
+2. **Giao diện đính kèm chuẩn DeepSeek Chat (Native Composer Rail)**:
+   - Thẻ đính kèm hiển thị trực tiếp **bên trong khung chat capsule**, đồng bộ hoàn toàn với font chữ, màu sắc, viền và bóng đổ ở cả **Light Mode** và **Dark Mode**.
+   - **Thẻ ảnh**: Chuẩn hình vuông 64x64px, bo góc tròn 16px (`border-radius: 16px`), bấm vào để xem ảnh phóng to toàn màn hình qua **Lightbox viewer**.
+   - **Thẻ file**: Chiều cao 64px, bo góc 16px, có huy hiệu đuôi file (`TXT`, `PDF`, `PY`...) nổi bật cùng tên và dung lượng file.
+   - Nút gỡ bỏ (`✕`) tinh tế, tự động hiện mượt mà khi rê chuột (`hover`).
 
-3. **Lưu trữ tự động vào Workspace**:
-   - Mọi tệp ảnh/file khi tải lên được lưu an toàn vào thư mục `uploads/` bên trong workspace hiện tại của project.
-   - Tự động đánh số hậu tố nếu trùng tên (`image_1.png`, `image_2.png`...) tránh ghi đè dữ liệu cũ.
+3. **Phân tách file độc lập theo từng Session (Session Isolation)**:
+   - Các file tải lên được gắn mã định danh session (`uploads/session_{sessionId}__<ten_file>`), đảm bảo tệp của session này không bị hiển thị hay rò rỉ sang session khác.
+   - Menu `/uploads` của từng session chỉ hiển thị các tệp thuộc phiên đó.
 
-4. **Tự động chèn Prompt gọi Tool**:
-   - Sau khi upload thành công, plugin tự động điền prompt vào khung chat với đường dẫn tương đối `uploads/...`:
-     - Với ảnh: Yêu cầu model gọi tool `read_image` để xem và phân tích ảnh.
-     - Với file: Yêu cầu model gọi tool `read` để đọc nội dung file.
+4. **Tự động nén ảnh thông minh (> 4.5MB)**:
+   - Tự động phát hiện và nén/resize các ảnh độ phân giải siêu lớn (> 4.5MB) trước khi tải lên, giúp tránh vượt quá giới hạn 5MB (`5,242,880 bytes`) của tool `read_image` trong DeepSeek Harness.
+
+5. **Kiểm tra chặt chẽ tính năng Vision của Model**:
+   - Tự động kiểm tra model đang kích hoạt có cấu hình `input: [text, image]` hay không. Nếu model thuần text, hệ thống sẽ cảnh báo trực tiếp người dùng trước khi upload.
 
 ---
 
@@ -29,8 +35,16 @@ Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add p
 
 ### Cách 1: Liên kết cục bộ vào Web Profile (Khuyên dùng)
 
-1. Mở file `package.json` trong profile web của bạn (ví dụ: `C:\Users\Admin\.dsh\profiles\web\package.json`).
-2. Thêm plugin vào mục `dependencies` và danh sách `bundles`:
+1. Clone repository về máy tính:
+```bash
+git clone https://github.com/danhcng3822f/dsh-upload-plugin.git
+cd dsh-upload-plugin
+pnpm install
+pnpm run build
+```
+
+2. Mở file `package.json` trong profile web của DeepSeek Harness (ví dụ: `C:\Users\<User>\.dsh\profiles\web\package.json`).
+3. Thêm plugin vào mục `dependencies` và danh sách `bundles`:
 
 ```json
 {
@@ -40,74 +54,81 @@ Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add p
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "dsh-vision-plugin"
+        "dsh-upload-plugin"
       ]
     }
   },
   "dependencies": {
-    "dsh-vision-plugin": "link:D:/dsh-vision-plugim"
+    "dsh-upload-plugin": "link:C:/path/to/dsh-upload-plugin"
   }
 }
 ```
 
-3. Chạy `pnpm install` trong thư mục profile:
+4. Chạy cài đặt trong thư mục profile:
 ```bash
-cd C:\Users\Admin\.dsh\profiles\web
+cd C:\Users\<User>\.dsh\profiles\web
 pnpm install
 ```
 
-4. Khởi động lại DeepSeek Harness hoặc tải lại trang web `http://127.0.0.1:3080`.
+5. Khởi động lại DeepSeek Harness hoặc tải lại trang web `http://127.0.0.1:3080`.
 
 ---
 
 ## ⚙️ Cấu hình Custom Provider hỗ trợ Vision
 
-Để model từ Custom Provider có thể xử lý ảnh, bạn cần khai báo `input: [text, image]` trong cấu hình model của provider (trong settings hoặc profile):
+Để model từ Custom Provider có thể xem và phân tích ảnh, hãy thêm modality `"image"` vào trường `"input"` trong cấu hình provider của bạn:
 
-```yaml
-models:
-  - id: gpt-4o
-    name: GPT-4o Vision
-    input:
-      - text
-      - image
+```json
+{
+  "id": "claude-opus-5-thinking",
+  "name": "Claude Opus 5 Thinking",
+  "input": ["text", "image"]
+}
 ```
 
 ---
 
-## 💻 Phát triển & Kiểm thử
+## 💻 Lệnh phát triển & Kiểm thử
 
 ```bash
-# Cài đặt dependencies
+# Cài đặt thư viện
 pnpm install
 
-# Chạy test suite
+# Chạy kiểm thử tự động (Vitest)
 pnpm test
 
-# Build host và web client bundle
+# Build mã nguồn (Host TypeScript & Client ESBuild Bundle)
 pnpm run build
 ```
 
 ---
 
-## 📁 Cấu trúc thư mục
+## 📁 Cấu trúc dự án
 
 ```text
-dsh-vision-plugin/
+dsh-upload-plugin/
 ├── src/
-│   ├── types.ts              # Interface định nghĩa API request & response
-│   ├── index.ts              # Host-side entry point (Node.js Cordis plugin)
+│   ├── types.ts              # Định nghĩa interface API & kiểu dữ liệu
+│   ├── index.ts              # Host-side entry point (Node.js Cordis plugin & WebServer endpoints)
 │   ├── host/
-│   │   ├── endpoints.ts      # Xử lý check-vision và upload
-│   │   └── file-utils.ts     # Xử lý lưu file & chống trùng tên
+│   │   ├── endpoints.ts      # Xử lý check vision, upload file, list uploads và view file
+│   │   └── file-utils.ts     # Tiện ích định danh file và phân giải đường dẫn duy nhất
 │   └── client/
-│       ├── index.ts          # Client-side entry point (dsh.client)
-│       ├── commands.ts       # Đăng ký lệnh photos và files vào commandUi
-│       └── uploader.ts       # Kích hoạt file picker và upload lên host
+│       ├── index.ts          # Client-side entry point (nạp vào trình duyệt)
+│       ├── commands.ts       # Đăng ký lệnh /photos, /files, /uploads vào menu dấu cộng
+│       ├── attachment-bar.ts # Thanh đính kèm trong chat composer & Lightbox viewer
+│       └── uploader.ts       # File picker, nén ảnh, upload và sinh prompt
 ├── lib/
 │   ├── index.js              # Host bundle đã biên dịch
-│   └── client.js             # Client bundle cho trình duyệt web
-├── tests/                    # Bộ kiểm thử đơn vị Vitest
-├── cordis.patch.yml          # Patch cấu hình Cordis
+│   └── client.js             # Client bundle trình duyệt (Web)
+├── tests/                    # Bộ kiểm thử đơn vị tự động Vitest
+├── cordis.patch.yml          # Cấu hình Cordis DI
+├── LICENSE                   # Giấy phép nguồn mở MIT
 └── package.json
 ```
+
+---
+
+## 📄 Giấy phép (License)
+
+Dự án được phân phối dưới giấy phép nguồn mở [MIT License](LICENSE).

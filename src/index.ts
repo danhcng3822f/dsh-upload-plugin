@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { handleCheckVision, handleListUploads, handleUpload, handleViewFile } from './host/endpoints.js'
 
-export const name = 'dsh-vision-plugin'
+export const name = 'dsh-upload-plugin'
 
 function resolveWorkspace(ctx: Context, sessionId?: string, explicitWs?: string): string {
   if (explicitWs) return explicitWs

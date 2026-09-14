@@ -1,7 +1,21 @@
 {
-  "name": "dsh-vision-plugin",
+  "name": "dsh-upload-plugin",
   "version": "0.1.0",
-  "description": "DeepSeek Harness plugin providing Add photos and Add files actions in chat UI with vision validation",
+  "description": "DeepSeek Harness plugin providing Add photos, Add files, and Uploaded files in chat UI with vision validation and session isolation",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danhcng3822f/dsh-upload-plugin.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "vision",
+    "upload",
+    "files",
+    "cordis"
+  ],
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -17,7 +31,8 @@
     "lib",
     "src",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {

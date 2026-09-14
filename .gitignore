@@ -1,5 +1,9 @@
 node_modules/
 lib/
-.superpowers/
 dist/
 *.log
+uploads/*
+!uploads/.gitkeep
+.superpowers/
+.DS_Store
+Thumbs.db
