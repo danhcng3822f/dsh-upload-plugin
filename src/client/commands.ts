@@ -1,14 +1,38 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { addAttachments, openImageLightbox } from './attachment-bar.js'
+import {
+  addDraftAttachments,
+  clearDraftAttachments,
+  getSessionUploads,
+  openImageLightbox,
+  renderAttachmentBar,
+  type SessionUploadRecord,
+} from './attachment-bar.js'
 import {
   checkModelVision,
   fetchUploadedFiles,
+  fileToBase64,
   formatFileSize,
   generateDraftPrompt,
   insertPromptIntoComposer,
   pickFilesFromBrowser,
   uploadMultipleFiles,
 } from './uploader.js'
+
+function bindComposerAutoClear(): void {
+  const textarea = document.querySelector('textarea[data-input-target], textarea')
+  if (textarea && !(textarea as any).__dsh_vision_bound) {
+    (textarea as any).__dsh_vision_bound = true
+    textarea.addEventListener('keydown', (e: any) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        setTimeout(clearDraftAttachments, 300)
+      }
+    })
+    const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"]')
+    sendBtn?.addEventListener('click', () => {
+      setTimeout(clearDraftAttachments, 300)
+    })
+  }
+}
 
 export function registerVisionCommands(ctx: Context): void {
   const commandUi = ctx.get('commandUi') as any
@@ -55,20 +79,32 @@ export function registerVisionCommands(ctx: Context): void {
           const successful = uploadResponses.filter(r => r.ok && r.relativePath)
 
           if (successful.length > 0) {
-            // Add to visual attachment rail
-            const items = successful.map((res, index) => {
-              const file = files[index]
-              const previewUrl = URL.createObjectURL(file)
-              return {
-                id: `${Date.now()}-${index}-${res.filename}`,
+            // Build visual attachment records with data URLs for instant preview
+            const records: SessionUploadRecord[] = []
+            for (let i = 0; i < successful.length; i++) {
+              const res = successful[i]
+              const file = files[i]
+              let previewUrl = ''
+              try {
+                const b64 = await fileToBase64(file)
+                previewUrl = `data:${file.type || 'image/png'};base64,${b64}`
+              } catch {
+                previewUrl = URL.createObjectURL(file)
+              }
+
+              records.push({
+                id: `${Date.now()}-${i}-${res.filename}`,
                 name: res.filename ?? file.name,
                 relativePath: res.relativePath ?? `uploads/${file.name}`,
                 size: file.size,
                 isPhoto: true,
                 previewUrl,
-              }
-            })
-            addAttachments(session.sessionId, items)
+                uploadedAt: Date.now(),
+              })
+            }
+
+            addDraftAttachments(session.sessionId, records)
+            bindComposerAutoClear()
 
             // Insert prompt into chat composer
             const prompt = generateDraftPrompt(
@@ -108,19 +144,20 @@ export function registerVisionCommands(ctx: Context): void {
           const successful = uploadResponses.filter(r => r.ok && r.relativePath)
 
           if (successful.length > 0) {
-            // Add to visual attachment rail
-            const items = successful.map((res, index) => {
-              const file = files[index]
+            const records: SessionUploadRecord[] = successful.map((res, i) => {
+              const file = files[i]
               return {
-                id: `${Date.now()}-${index}-${res.filename}`,
+                id: `${Date.now()}-${i}-${res.filename}`,
                 name: res.filename ?? file.name,
                 relativePath: res.relativePath ?? `uploads/${file.name}`,
                 size: file.size,
                 isPhoto: false,
-                previewUrl: '',
+                uploadedAt: Date.now(),
               }
             })
-            addAttachments(session.sessionId, items)
+
+            addDraftAttachments(session.sessionId, records)
+            bindComposerAutoClear()
 
             // Insert prompt into chat composer
             const prompt = generateDraftPrompt(
@@ -145,8 +182,33 @@ export function registerVisionCommands(ctx: Context): void {
     ui: {
       kind: 'popupSelect',
       options: async (session: any) => {
-        const res = await fetchUploadedFiles(session.sessionId)
-        if (!res.ok || res.files.length === 0) {
+        // Read from local session storage first
+        const localList = getSessionUploads(session.sessionId)
+
+        // Try querying backend list
+        const apiRes = await fetchUploadedFiles(session.sessionId)
+        const apiFiles = apiRes.ok ? apiRes.files : []
+
+        // Merge sources, preferring items with previews
+        const map = new Map<string, SessionUploadRecord>()
+        for (const f of apiFiles) {
+          map.set(f.relativePath, {
+            id: f.relativePath,
+            name: f.name,
+            relativePath: f.relativePath,
+            size: f.size,
+            isPhoto: f.isPhoto,
+            previewUrl: f.viewUrl,
+            uploadedAt: f.mtime,
+          })
+        }
+        for (const l of localList) {
+          map.set(l.relativePath, l)
+        }
+
+        const combined = Array.from(map.values()).sort((a, b) => b.uploadedAt - a.uploadedAt)
+
+        if (combined.length === 0) {
           return [
             {
               id: 'empty',
@@ -156,26 +218,24 @@ export function registerVisionCommands(ctx: Context): void {
           ]
         }
 
-        return res.files.map(file => ({
-          id: file.relativePath,
-          label: `${file.isPhoto ? '🖼️' : '📄'} ${file.name}`,
-          detail: `${formatFileSize(file.size)} · ${file.relativePath}`,
-          raw: file,
+        return combined.map(item => ({
+          id: item.relativePath,
+          label: `${item.isPhoto ? '🖼️' : '📄'} ${item.name}`,
+          detail: `${formatFileSize(item.size)} · ${item.relativePath}`,
+          raw: item,
         }))
       },
       onSelect: async (option: any, _session: any) => {
         if (option.id === 'empty') return
 
-        const file = option.raw
-        if (file?.isPhoto && file?.viewUrl) {
-          // Open preview lightbox for photos
-          openImageLightbox(file.viewUrl, file.name)
+        const item = option.raw as SessionUploadRecord
+        if (item?.isPhoto && item?.previewUrl) {
+          openImageLightbox(item.previewUrl, item.name)
         }
 
-        // Insert prompt to ask model to read this file
-        const prompt = file?.isPhoto
-          ? `Bạn hãy gọi tool \`read_image\` để xem và phân tích lại ảnh \`${option.id}\`: `
-          : `Bạn hãy đọc nội dung file \`${option.id}\` (dùng tool \`read\`) và hỗ trợ tôi: `
+        const prompt = item?.isPhoto
+          ? `Bạn hãy gọi tool \`read_image\` để xem và phân tích lại ảnh \`${item.relativePath}\`: `
+          : `Bạn hãy đọc nội dung file \`${item.relativePath}\` (dùng tool \`read\`) và hỗ trợ tôi: `
         insertPromptIntoComposer(prompt)
       },
     },
