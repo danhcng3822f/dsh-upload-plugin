@@ -1,0 +1,6 @@
+# pnpm 11 reads all settings from pnpm-workspace.yaml, even for a standalone
+# package (no `packages` field needed). Mirrors the main deepseek-harness repo:
+# strictDepBuilds makes an unlisted install script a hard install error, so
+# esbuild's native-binary installer must be explicitly reviewed and allowed.
+allowBuilds:
+  esbuild: true
