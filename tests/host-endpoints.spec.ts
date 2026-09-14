@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { handleCheckVision, handleUpload } from '../src/host/endpoints.ts'
+import { handleCheckVision, handleListUploads, handleUpload, handleViewFile } from '../src/host/endpoints.ts'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,6 +38,27 @@ describe('host endpoints', () => {
 
       const saved = await readFile(result.fullPath!, 'utf8')
       expect(saved).toBe('hello world')
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('lists uploaded files and views an uploaded file', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'dsh-upload-list-'))
+    try {
+      const b64 = Buffer.from('image content').toString('base64')
+      await handleUpload(tempDir, 'photo.png', b64, true)
+
+      const listRes = await handleListUploads(tempDir)
+      expect(listRes.ok).toBe(true)
+      expect(listRes.files.length).toBe(1)
+      expect(listRes.files[0].name).toBe('photo.png')
+      expect(listRes.files[0].isPhoto).toBe(true)
+
+      const viewRes = await handleViewFile(tempDir, 'uploads/photo.png')
+      expect(viewRes.found).toBe(true)
+      expect(viewRes.contentType).toBe('image/png')
+      expect(viewRes.buffer?.toString()).toBe('image content')
     } finally {
       await rm(tempDir, { recursive: true, force: true })
     }

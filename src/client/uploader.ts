@@ -1,10 +1,35 @@
-import type { FileUploadResponse, VisionCheckResponse } from '../types.js'
+import type { AttachedItem, FileUploadResponse, UploadListResponse, VisionCheckResponse } from '../types.js'
 
-export function generateFileDraftPrompt(relativePath: string, isPhoto: boolean): string {
-  if (isPhoto) {
-    return `Tôi vừa tải lên ảnh \`${relativePath}\`. Bạn hãy gọi tool \`read_image\` để xem và phân tích ảnh này nhé: `
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+export function generateDraftPrompt(items: Array<{ relativePath: string; isPhoto: boolean }>): string {
+  if (items.length === 0) return ''
+
+  const allPhotos = items.every(i => i.isPhoto)
+  if (allPhotos) {
+    if (items.length === 1) {
+      return `Tôi vừa tải lên ảnh \`${items[0].relativePath}\`. Bạn hãy gọi tool \`read_image\` để xem và phân tích ảnh này nhé: `
+    }
+    const list = items.map(i => `- \`${i.relativePath}\``).join('\n')
+    return `Tôi vừa tải lên ${items.length} ảnh sau:\n${list}\nBạn hãy gọi tool \`read_image\` lần lượt để xem và phân tích các ảnh này nhé: `
   }
-  return `Tôi vừa tải lên file \`${relativePath}\`. Bạn hãy đọc nội dung file này (dùng tool \`read\` hoặc tool đọc file phù hợp) và hỗ trợ tôi: `
+
+  const allFiles = items.every(i => !i.isPhoto)
+  if (allFiles) {
+    if (items.length === 1) {
+      return `Tôi vừa tải lên file \`${items[0].relativePath}\`. Bạn hãy đọc nội dung file này (dùng tool \`read\` hoặc tool đọc file phù hợp) và hỗ trợ tôi: `
+    }
+    const list = items.map(i => `- \`${i.relativePath}\``).join('\n')
+    return `Tôi vừa tải lên ${items.length} file sau:\n${list}\nBạn hãy đọc nội dung các file này (dùng tool \`read\` hoặc tool đọc file phù hợp) và hỗ trợ tôi: `
+  }
+
+  // Mixed items
+  const list = items.map(i => `- \`${i.relativePath}\` (${i.isPhoto ? 'ảnh' : 'file'})`).join('\n')
+  return `Tôi vừa tải lên các tệp sau:\n${list}\nBạn hãy đọc/xem nội dung các tệp này và hỗ trợ tôi: `
 }
 
 export async function checkModelVision(sessionId: string): Promise<VisionCheckResponse> {
@@ -12,7 +37,7 @@ export async function checkModelVision(sessionId: string): Promise<VisionCheckRe
     let provider = ''
     let model = ''
 
-    // 1. Query current session model via DSH RPC
+    // Query current session model via DSH RPC
     try {
       const modelRes = await fetch('/api/session.models', {
         method: 'POST',
@@ -76,27 +101,74 @@ export async function resolveWorkspaceDir(sessionId: string): Promise<string | n
   return null
 }
 
-export function pickFileFromBrowser(accept: string): Promise<File | null> {
+export function pickFilesFromBrowser(accept: string, multiple = true): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = accept
+    input.multiple = multiple
     input.style.display = 'none'
 
     input.onchange = () => {
-      const file = input.files?.[0] ?? null
+      const files = Array.from(input.files ?? [])
       document.body.removeChild(input)
-      resolve(file)
+      resolve(files)
     }
 
     input.oncancel = () => {
       document.body.removeChild(input)
-      resolve(null)
+      resolve([])
     }
 
     document.body.appendChild(input)
     input.click()
   })
+}
+
+/**
+ * If an image is larger than 4.5MB, downscale and re-compress to JPEG
+ * so it stays safely under DSH's 5,242,880-byte tool limit.
+ */
+export async function optimizeImageIfNeeded(file: File): Promise<File> {
+  if (!file.type.startsWith('image/') || file.size <= 4.5 * 1024 * 1024) {
+    return file
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file)
+    const maxDim = 2048
+    let width = bitmap.width
+    let height = bitmap.height
+
+    if (width > maxDim || height > maxDim) {
+      if (width > height) {
+        height = Math.round((height * maxDim) / width)
+        width = maxDim
+      } else {
+        width = Math.round((width * maxDim) / height)
+        height = maxDim
+      }
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+
+    ctx.drawImage(bitmap, 0, 0, width, height)
+
+    const blob = await new Promise<Blob | null>(res => {
+      canvas.toBlob(res, 'image/jpeg', 0.88)
+    })
+
+    if (!blob) return file
+
+    const newName = file.name.replace(/\.[^.]+$/, '') + '.jpg'
+    return new File([blob], newName, { type: 'image/jpeg' })
+  } catch {
+    return file
+  }
 }
 
 export function fileToBase64(file: File): Promise<string> {
@@ -112,21 +184,22 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export async function uploadFileToWorkspace(
+export async function uploadSingleFile(
   sessionId: string,
+  workspaceDir: string | null,
   file: File,
   isPhoto: boolean
 ): Promise<FileUploadResponse> {
-  const fileBase64 = await fileToBase64(file)
-  const workspaceDir = await resolveWorkspaceDir(sessionId)
+  const readyFile = isPhoto ? await optimizeImageIfNeeded(file) : file
+  const fileBase64 = await fileToBase64(readyFile)
 
   const res = await fetch('/api/vision-plugin/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sessionId,
-      workspaceDir,
-      fileName: file.name,
+      workspaceDir: workspaceDir ?? undefined,
+      fileName: readyFile.name,
       fileBase64,
       isPhoto,
     }),
@@ -138,13 +211,40 @@ export async function uploadFileToWorkspace(
   return await res.json()
 }
 
+export async function uploadMultipleFiles(
+  sessionId: string,
+  files: File[],
+  isPhoto: boolean
+): Promise<FileUploadResponse[]> {
+  const workspaceDir = await resolveWorkspaceDir(sessionId)
+  return await Promise.all(
+    files.map(file => uploadSingleFile(sessionId, workspaceDir, file, isPhoto))
+  )
+}
+
+export async function fetchUploadedFiles(
+  sessionId: string
+): Promise<UploadListResponse> {
+  try {
+    const workspaceDir = await resolveWorkspaceDir(sessionId)
+    const query = new URLSearchParams()
+    query.set('sessionId', sessionId)
+    if (workspaceDir) query.set('workspaceDir', workspaceDir)
+
+    const res = await fetch(`/api/vision-plugin/list?${query.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err: any) {
+    return { ok: false, files: [], error: err?.message ?? 'Failed to list uploads' }
+  }
+}
+
 export function insertPromptIntoComposer(prompt: string): void {
   const textarea = document.querySelector('textarea[data-input-target], textarea') as HTMLTextAreaElement | null
   if (textarea) {
     const current = textarea.value
     const newText = current ? `${current}\n${prompt}` : prompt
 
-    // React overrides the value setter, so call native setter to trigger React change tracking
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
     if (nativeSetter) {
       nativeSetter.call(textarea, newText)
