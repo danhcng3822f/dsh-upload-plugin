@@ -125,11 +125,9 @@ export function apply(ctx: Context): void {
   // The brief writes the element inline as JSX in a render callback; `index.ts` is a
   // `.ts` file, which the TypeScript parser refuses to read as JSX (TS1005), so the
   // component is handed to the registry and the wire face arrives through the `inject`
-  // face instead — Task 8's route, for Task 8's reason. Here the reason is sharper
-  // still: the section's `load` effect is keyed on its `api` prop, so a fresh element
-  // per render would re-read the settings document on every re-render. The face thunk
-  // may still run more than once, but it only ever hands over the connection's own
-  // stable `api`, which is the identity that effect actually depends on.
+  // face instead — Task 8's route. The face thunk may run more than once, but it only
+  // ever hands over the connection's own stable `api`, which is the identity the
+  // section's `load` effect depends on.
   ctx.inject(['slots', 'connection'], (scoped: Context) => {
     const slots = scoped.get('slots') as any
     const connection = scoped.get('connection') as any

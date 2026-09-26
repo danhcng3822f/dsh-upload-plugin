@@ -144,7 +144,14 @@ export interface VisionSectionProps {
 export function VisionSection({ api }: VisionSectionProps) {
   const [providers, setProviders] = useState<ProviderRow[]>([])
   const [writable, setWritable] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Two failure channels, because they are two different facts. A read failure
+  // means the page has nothing to show, so it replaces the page and offers a
+  // retry. A write failure touched one row: it leaves the list and every
+  // checkbox standing and is reported beside them, because replacing the page
+  // would announce a read that never failed and destroy the context the user
+  // needs to act on the failure.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [writeError, setWriteError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // Nothing about the host's posture is known before the first describe lands,
   // so the page must not state one: `writable` defaults to false and the
@@ -156,26 +163,29 @@ export function VisionSection({ api }: VisionSectionProps) {
    * `IApiClient`, so this callback keeps its identity across renders and the
    * mount effect below runs once — a settings page must not re-read the
    * document on every render.
+   *
+   * Every failure here is a READ failure and reports through `loadError`, the
+   * only channel that replaces the page.
    */
   const load = useCallback(async () => {
     try {
       const response = await api.settings.describe({})
       if (!response.result.ok) {
-        setError(response.result.error.message)
+        setLoadError(response.result.error.message)
         return
       }
       const view = response.result.value.namespaces.find(candidate => candidate.ns === NAMESPACE)
       if (view === undefined) {
         setProviders([])
         setWritable(false)
-        setError(`Không tìm thấy namespace "${NAMESPACE}"`)
+        setLoadError(`Không tìm thấy namespace "${NAMESPACE}"`)
         return
       }
       setProviders(readProviders(view.value))
       setWritable(response.result.value.writable)
-      setError(null)
+      setLoadError(null)
     } catch (err) {
-      setError(messageOf(err))
+      setLoadError(messageOf(err))
     } finally {
       setLoading(false)
     }
@@ -198,6 +208,11 @@ export function VisionSection({ api }: VisionSectionProps) {
    * no other field of this profile is restated. A profile that resolves only
    * from a base layer does materialize its `models` array into the user layer;
    * that is the only node the op names, and the resolved result is unchanged.
+   *
+   * Every failure on this path — including the re-read above and the reload
+   * after a successful write — reports through `writeError`: from the user's
+   * side a checkbox was clicked and did not take, and the page they need to see
+   * that against stays mounted.
    * @param providerId - the provider route id (the `providers` dict key).
    * @param modelId - the row to change, matched by `setVision`.
    * @param on - true declares `["text","image"]`, false removes the `input` key.
@@ -207,7 +222,7 @@ export function VisionSection({ api }: VisionSectionProps) {
     try {
       const described = await api.settings.describe({})
       if (!described.result.ok) {
-        setError(described.result.error.message)
+        setWriteError(described.result.error.message)
         return
       }
       const view = described.result.value.namespaces.find(candidate => candidate.ns === NAMESPACE)
@@ -215,7 +230,7 @@ export function VisionSection({ api }: VisionSectionProps) {
         ? undefined
         : readProviders(view.value).find(row => row.id === providerId)
       if (view === undefined || provider === undefined) {
-        setError(`Không tìm thấy provider "${providerId}" trong "${NAMESPACE}"`)
+        setWriteError(`Không tìm thấy provider "${providerId}" trong "${NAMESPACE}"`)
         return
       }
       const response = await api.settings.mutate({
@@ -228,23 +243,25 @@ export function VisionSection({ api }: VisionSectionProps) {
         expectedRevision: view.revision,
       })
       if (!response.result.ok) {
-        setError(response.result.error.code === 'settings-conflict'
+        setWriteError(response.result.error.code === 'settings-conflict'
           ? 'Cấu hình vừa bị thay đổi ở nơi khác. Thử lại.'
           : response.result.error.message)
         return
       }
+      // The write landed; the note belongs to the previous attempt.
+      setWriteError(null)
       await load()
     } catch (err) {
-      setError(messageOf(err))
+      setWriteError(messageOf(err))
     } finally {
       setBusy(false)
     }
   }, [api, load])
 
-  if (error !== null) {
+  if (loadError !== null) {
     return (
       <div>
-        <p>Không đọc được cấu hình model: {error}</p>
+        <p>Không đọc được cấu hình model: {loadError}</p>
         <button type="button" onClick={() => { void load() }}>Thử lại</button>
       </div>
     )
@@ -262,6 +279,10 @@ export function VisionSection({ api }: VisionSectionProps) {
       {loading && <p>Đang tải…</p>}
       {!loading && !writable && <p>Cấu hình hiện chỉ cho đọc nên không lưu được thay đổi.</p>}
       {!loading && total === 0 && <p>Chưa có provider nào khai báo model trong <code>{NAMESPACE}</code>.</p>}
+      {/* A write failure names the write. It sits above the list it failed to
+          change, and the list stays mounted so the user can see which row and
+          click it again. */}
+      {writeError !== null && <p>Không cập nhật được cấu hình model: {writeError}</p>}
       {declared.map(provider => {
         const rows = provider.models.filter(isAddressable)
         const skipped = provider.models.length - rows.length
