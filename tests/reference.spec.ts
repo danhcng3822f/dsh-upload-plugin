@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createVisionSource, mintChip } from '../src/client/reference.js'
+import { createVisionSource, mintChip, nextChipCursor } from '../src/client/reference.js'
 import { AttachmentStore } from '../src/client/attachment-store.js'
 import { makeRef } from '../src/client/attachments.js'
 
@@ -60,6 +60,19 @@ describe('createVisionSource', () => {
     const source = createVisionSource(storeWith('s1', 'a.png'))
     expect(source.lexicon(session('s1'))).toEqual(['a.png'])
   })
+
+  // `clipboardText` is not only the copy/paste projection: it is also the
+  // PERSISTENCE projection, i.e. what a restored draft receives for a chip that
+  // survives a reload. An untested one is untested draft persistence.
+  it('projects a known ref to its readable token', () => {
+    const source = createVisionSource(storeWith('s1', 'a.png'))
+    expect(source.codec.clipboardText(makeRef('abc12345', 'a.png'))).toBe('@a.png')
+  })
+
+  it('falls back to the raw ref when the store holds no record for it', () => {
+    const source = createVisionSource(storeWith('s1', 'a.png'))
+    expect(source.codec.clipboardText('gone')).toBe('@gone')
+  })
 })
 
 const record = (token: string, isPhoto = true) => ({
@@ -118,5 +131,40 @@ describe('mintChip', () => {
   it('returns false when bail does not answer a literal true', () => {
     const { facade } = fakeSessions(undefined)
     expect(mintChip(facade, 's1', { draft: 'hi', draftRev: 3 }, record('a.png'))).toBe(false)
+  })
+})
+
+describe('nextChipCursor', () => {
+  it('appends the placeholder plus exactly one separating space', () => {
+    const next = nextChipCursor({ draft: 'xem ', draftRev: 4 })
+    expect(next.draft).toBe('xem \uFFFC ')
+    // Two UTF-16 code units: the machine's `PLACEHOLDER + gap`
+    // (`machine.ts:296-298`), and PLACEHOLDER is one code unit (`:24`) — which is
+    // what makes the cursor's draft length track the machine's exactly.
+    expect(next.draft.length - 'xem '.length).toBe(2)
+  })
+
+  it('advances the revision by exactly one', () => {
+    expect(nextChipCursor({ draft: '', draftRev: 7 }).draftRev).toBe(8)
+  })
+
+  it('returns a new pair and leaves the one it was given untouched', () => {
+    const cursor = { draft: 'a', draftRev: 1 }
+    const next = nextChipCursor(cursor)
+    expect(cursor).toEqual({ draft: 'a', draftRev: 1 })
+    expect(next).not.toBe(cursor)
+  })
+
+  it('models a batch of successful mints as one chip and one revision each', () => {
+    // The defect this function exists to prevent: every iteration after the first
+    // reused a stale CAS pair, so three photos produced one chip and two notices.
+    let cursor = { draft: 'xem ', draftRev: 4 }
+    for (let i = 0; i < 3; i++) cursor = nextChipCursor(cursor)
+    expect(cursor.draft).toBe('xem \uFFFC \uFFFC \uFFFC ')
+    expect(cursor.draftRev).toBe(7)
+    // The next mint's span is zero-width at `draft.length`, and `casOk`
+    // bounds-checks `span.end <= draft.length` (`machine.ts:259-262`), so the
+    // cursor's length has to grow with the machine's: two units per chip.
+    expect(cursor.draft.length).toBe('xem '.length + 3 * 2)
   })
 })

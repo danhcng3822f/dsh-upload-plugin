@@ -1,3 +1,5 @@
+/** The settings namespace holding pi-ai provider profiles. */
+export declare const NAMESPACE = "llm-pi-ai";
 /**
  * The `result` envelope every wire call answers with: a business rejection is a
  * resolved value, not a thrown error, so both branches are checked.
@@ -54,6 +56,14 @@ export interface VisionSectionApi {
 }
 export interface VisionSectionProps {
     api: VisionSectionApi;
+    /**
+     * Register the page's reload with the plugin's `settings/document-updated`
+     * subscription, which fires when the document changes somewhere else (the
+     * shipped Models page, another tab, a hand edit). Returns the disposer.
+     * @param reload - called with no arguments when the document changed.
+     * @returns the unsubscribe function.
+     */
+    onDocumentUpdated(reload: () => void): () => void;
 }
-export declare function VisionSection({ api }: VisionSectionProps): import("react").JSX.Element;
+export declare function VisionSection({ api, onDocumentUpdated }: VisionSectionProps): import("react").JSX.Element;
 export {};

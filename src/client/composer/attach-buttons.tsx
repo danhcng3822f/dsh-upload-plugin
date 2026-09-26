@@ -6,15 +6,20 @@
  * instruction text is produced later, by the reference codec at send time.
  */
 import { useCallback, useRef, useState } from 'react'
+import type { InputState } from '@deepseek-ai/dsh-client-ui-conversation'
 import type { AttachmentStore } from '../attachment-store.js'
 import type { AttachmentRecord } from '../attachments.js'
-import { mintChip } from '../reference.js'
-import { optimizeImageIfNeeded, pickFilesFromBrowser, uploadMultipleFiles } from '../uploader.js'
+import { mintChip, nextChipCursor } from '../reference.js'
+import { pickFilesFromBrowser, uploadMultipleFiles } from '../uploader.js'
 
-/** The `InputZone` owner share this slot delivers (point-in-time snapshots). */
+/**
+ * The `InputZone` owner share this slot delivers (point-in-time snapshots), as
+ * the harness publishes it: `input` is the live `InputState`, not a hand-stated
+ * subset (`ui-conversation/src/client/contract/slots.ts:274-277`).
+ */
 export interface AttachButtonsProps {
   sessionId: string
-  input: { draft: string; draftRev: number }
+  input: InputState
   store: AttachmentStore
   sessions: Parameters<typeof mintChip>[0]
   notify: (level: 'info' | 'error', text: string) => void
@@ -38,12 +43,11 @@ export function AttachButtons({ sessionId, input, store, sessions, notify }: Att
     try {
       const responses = await uploadMultipleFiles(sessionId, files, isPhoto)
       // This loop runs synchronously, so React cannot re-render inside it and the
-      // `live` ref still holds the revision the click started from. Model the
-      // machine's own transaction instead of waiting for a render:
-      // `replaceSpanWithChip` appends the placeholder plus a separating space and
-      // `adopt()` advances draftRev by one. Advance only after a SUCCESSFUL mint —
-      // a failed one leaves the draft untouched, so the next iteration must reuse
-      // the same pair or its CAS is stale too.
+      // `live` ref still holds the revision the click started from. The cursor
+      // models the machine's own transaction instead — `nextChipCursor` carries
+      // the append and the revision bump, and is called only after a mint really
+      // landed, because a refused mint leaves the draft untouched and the next
+      // iteration must reuse the same pair.
       let cursor = { draft: live.current.draft, draftRev: live.current.draftRev }
       for (let i = 0; i < responses.length; i++) {
         const response = responses[i]
@@ -62,7 +66,7 @@ export function AttachButtons({ sessionId, input, store, sessions, notify }: Att
           notify('error', `Không chèn được tham chiếu cho ${token}`)
           continue
         }
-        cursor = { draft: `${cursor.draft}\uFFFC `, draftRev: cursor.draftRev + 1 }
+        cursor = nextChipCursor(cursor)
       }
     } catch (err) {
       notify('error', `Lỗi tải tệp: ${(err as Error).message}`)

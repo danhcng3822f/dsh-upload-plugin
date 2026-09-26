@@ -5,7 +5,7 @@ import {
   openImageLightbox,
 } from './attachment-bar.js'
 import type { AttachmentRecord } from './attachments.js'
-import { mintChip } from './reference.js'
+import { mintChip, nextChipCursor } from './reference.js'
 import {
   checkModelVision,
   cleanDisplayName,
@@ -113,7 +113,7 @@ async function attachFiles(
       notifySession(ctx, sessionId, `Không chèn được tham chiếu cho ${token}`)
       continue
     }
-    cursor = { draft: `${cursor.draft}\uFFFC `, draftRev: cursor.draftRev + 1 }
+    cursor = nextChipCursor(cursor)
   }
 }
 

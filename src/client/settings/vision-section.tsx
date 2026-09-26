@@ -27,7 +27,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { hasVision, setVision, type ModelRow } from '../vision-setting.js'
 
 /** The settings namespace holding pi-ai provider profiles. */
-const NAMESPACE = 'llm-pi-ai'
+export const NAMESPACE = 'llm-pi-ai'
 
 /**
  * Human text for a rejected wire call. A transport failure rejects with an
@@ -139,9 +139,17 @@ function readProviders(value: unknown): ProviderRow[] {
 
 export interface VisionSectionProps {
   api: VisionSectionApi
+  /**
+   * Register the page's reload with the plugin's `settings/document-updated`
+   * subscription, which fires when the document changes somewhere else (the
+   * shipped Models page, another tab, a hand edit). Returns the disposer.
+   * @param reload - called with no arguments when the document changed.
+   * @returns the unsubscribe function.
+   */
+  onDocumentUpdated(reload: () => void): () => void
 }
 
-export function VisionSection({ api }: VisionSectionProps) {
+export function VisionSection({ api, onDocumentUpdated }: VisionSectionProps) {
   const [providers, setProviders] = useState<ProviderRow[]>([])
   const [writable, setWritable] = useState(false)
   // Two failure channels, because they are two different facts. A read failure
@@ -193,6 +201,12 @@ export function VisionSection({ api }: VisionSectionProps) {
 
   useEffect(() => { void load() }, [load])
 
+  // Stay fresh while the page is mounted: the document can also change from the
+  // shipped Models page, another tab, or a hand edit, and this page renders a
+  // document it does not own. The push subscription itself lives in the plugin
+  // entry; this only hands it the reload.
+  useEffect(() => onDocumentUpdated(() => { void load() }), [onDocumentUpdated, load])
+
   /**
    * Flip one row's image declaration and write the provider's whole `models`
    * array back.
@@ -209,10 +223,12 @@ export function VisionSection({ api }: VisionSectionProps) {
    * from a base layer does materialize its `models` array into the user layer;
    * that is the only node the op names, and the resolved result is unchanged.
    *
-   * Every failure on this path — including the re-read above and the reload
-   * after a successful write — reports through `writeError`: from the user's
-   * side a checkbox was clicked and did not take, and the page they need to see
-   * that against stays mounted.
+   * Every failure the WRITE reports — the re-read above, and the write itself —
+   * goes through `writeError`: from the user's side a checkbox was clicked and
+   * did not take, and the page they need to see that against stays mounted. The
+   * reload after a successful write is a READ, so a failure there is a read
+   * failure and reports through `loadError` like every other read: a list the
+   * write has already invalidated must not stay on screen as fact.
    * @param providerId - the provider route id (the `providers` dict key).
    * @param modelId - the row to change, matched by `setVision`.
    * @param on - true declares `["text","image"]`, false removes the `input` key.

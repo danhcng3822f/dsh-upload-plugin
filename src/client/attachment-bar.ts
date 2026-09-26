@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import type { InputActions, InputState } from '@deepseek-ai/dsh-client-ui-conversation'
 import type { AttachmentStore } from './attachment-store.js'
 import { activeTokens, VISION_SOURCE, type AttachmentRecord, type ChipOccurrence } from './attachments.js'
 import { formatFileSize } from './uploader.js'
@@ -107,25 +108,21 @@ export function removeDraftAttachment(sessionId: string, ref: string): void {
 }
 
 /**
- * One chip occurrence as the composer share reports it: the plugin's structural
- * `ChipOccurrence` plus the placeholder offset the remove button needs. `offset`
- * stays optional because it belongs to an external contract — the guard for a
- * missing one is a real branch, not dead code.
+ * The live `InputZone` share slice the rail entry reads, plus the session
+ * standard kit's input actions.
+ *
+ * Both halves are the harness's own contracts rather than hand-stated subsets:
+ * the composer hands a `conversation.input.right` entry its `InputZone`
+ * (`ui-conversation/src/client/contract/slots.ts:274-277`, built at
+ * `ConversationRoot.tsx:81-82`) whose `input` is the published `InputState`, and
+ * `inputActions` is the `InputActions` face that same kit provides to every
+ * session-scope entry (`:229-234`). `offset` is part of `Occurrence`, so the
+ * guard below is a boundary guard rather than a type-level branch.
  */
-interface RailOccurrence extends ChipOccurrence {
-  readonly offset?: number
-}
-
-/** The live `InputZone` share slice the rail entry reads. */
 export interface RailEntryProps {
   sessionId: string
-  input?: {
-    draft: string
-    occurrences: readonly RailOccurrence[]
-  }
-  inputActions?: {
-    setDraft(text: string): void
-  }
+  input?: InputState
+  inputActions?: InputActions
 }
 
 /**
@@ -144,8 +141,10 @@ export interface RailEntryProps {
 export function AttachmentRailEntry({ sessionId, input, inputActions }: RailEntryProps) {
   // No dependency array on purpose: the share is a fresh snapshot per render, and
   // the remove button must be armed with THIS render's draft and offsets (typing
-  // before a chip shifts them). `renderAttachmentBar` skips its DOM work when the
-  // cards on screen already match, so a repeat render is cheap.
+  // before a chip shifts them). What the signature guard inside
+  // `renderAttachmentBar` skips is only the DOM REBUILD when the cards on screen
+  // already match — the record resolution behind that signature still runs, and
+  // it walks the store per chip.
   useEffect(() => {
     const draft = input?.draft ?? ''
     const occurrences = input?.occurrences ?? []

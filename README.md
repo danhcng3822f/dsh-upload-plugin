@@ -26,8 +26,9 @@ Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add p
 4. **Tự động nén ảnh thông minh (> 4.5MB)**:
    - Tự động phát hiện và nén/resize các ảnh độ phân giải siêu lớn (> 4.5MB) trước khi tải lên, giúp tránh vượt quá giới hạn 5MB (`5,242,880 bytes`) của tool `read_image` trong DeepSeek Harness.
 
-5. **Kiểm tra chặt chẽ tính năng Vision của Model**:
-   - Tự động kiểm tra model đang kích hoạt có cấu hình `input: [text, image]` hay không. Nếu model thuần text, hệ thống sẽ cảnh báo trực tiếp người dùng trước khi upload.
+5. **Kiểm tra tính năng Vision của Model (trên đường `/photos`)**:
+   - Khi bạn dùng **`/photos`** trong menu dấu cộng, plugin kiểm tra model đang kích hoạt có cấu hình `input: [text, image]` hay không. Nếu model thuần text, danh sách lựa chọn hiện cảnh báo và **không mở** hộp chọn ảnh.
+   - Hai nút `[📷]` `[📄]` trên thanh công cụ composer (mục 6) **không kiểm tra trước**: chúng luôn đính kèm và tạo chip. Việc model có đọc được ảnh hay không là do **khai báo** của bạn ở **Settings → Vision** — trang đó chỉ nói lên khai báo, không dò khả năng thật của upstream.
 
 6. **Hai nút đính kèm ngay trên thanh công cụ composer**:
    - `[📷]` (Thêm ảnh) và `[📄]` (Thêm tệp) nằm trực tiếp trong thanh công cụ của khung nhập liệu, bên trái nút chọn model — dùng được ngay mà không cần mở menu dấu cộng.
@@ -105,6 +106,7 @@ Plugin đăng ký thêm một trang cấu hình riêng: **Settings → Vision**.
 - **Đây là một khai báo (declaration), không phải phép đo.** Trang này chỉ nói lên rằng model *được khai báo* là đọc được ảnh — nó **không hề kiểm tra** upstream có thật sự phục vụ ảnh hay không.
 - Các toggle ghi vào **cùng tài liệu settings mà trang Models đang quản lý** (namespace `llm-pi-ai`), chứ không tạo bản sao riêng. Mỗi lần ghi chỉ định đúng một đường dẫn `providers.<id>.models`, nên **mọi trường khác của dòng model và của provider đều được giữ nguyên** — kể cả những trường plugin này không biết.
 - Trang đọc lại tài liệu ngay trước khi ghi và gửi kèm `expectedRevision`, nên nếu cấu hình vừa bị đổi ở nơi khác thì thao tác bị từ chối (báo "Cấu hình vừa bị thay đổi ở nơi khác. Thử lại.") thay vì ghi đè.
+- Trang **tự làm mới** khi tài liệu settings bị thay đổi từ nơi khác (trang Models, tab khác, hoặc sửa file bằng tay): nó theo dõi sự kiện `settings/document-updated` của namespace `llm-pi-ai`.
 - Nếu Host đang ở chế độ chỉ đọc, các checkbox bị vô hiệu hoá và trang nói rõ điều đó.
 
 ---
@@ -115,7 +117,7 @@ Plugin đăng ký thêm một trang cấu hình riêng: **Settings → Vision**.
 # Cài đặt thư viện
 pnpm install
 
-# Chạy kiểm thử tự động (Vitest, 60 unit test cho phần logic thuần)
+# Chạy kiểm thử tự động (Vitest, 74 unit test cho phần logic thuần)
 pnpm test
 
 # Build mã nguồn (Host TypeScript & Client ESBuild Bundle)

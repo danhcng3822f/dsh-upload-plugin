@@ -1,3 +1,4 @@
+import type { InputActions, InputState } from '@deepseek-ai/dsh-client-ui-conversation';
 import type { AttachmentStore } from './attachment-store.js';
 import { type ChipOccurrence } from './attachments.js';
 /**
@@ -40,24 +41,21 @@ export declare function detectActiveSessionId(): string | null;
  */
 export declare function removeDraftAttachment(sessionId: string, ref: string): void;
 /**
- * One chip occurrence as the composer share reports it: the plugin's structural
- * `ChipOccurrence` plus the placeholder offset the remove button needs. `offset`
- * stays optional because it belongs to an external contract — the guard for a
- * missing one is a real branch, not dead code.
+ * The live `InputZone` share slice the rail entry reads, plus the session
+ * standard kit's input actions.
+ *
+ * Both halves are the harness's own contracts rather than hand-stated subsets:
+ * the composer hands a `conversation.input.right` entry its `InputZone`
+ * (`ui-conversation/src/client/contract/slots.ts:274-277`, built at
+ * `ConversationRoot.tsx:81-82`) whose `input` is the published `InputState`, and
+ * `inputActions` is the `InputActions` face that same kit provides to every
+ * session-scope entry (`:229-234`). `offset` is part of `Occurrence`, so the
+ * guard below is a boundary guard rather than a type-level branch.
  */
-interface RailOccurrence extends ChipOccurrence {
-    readonly offset?: number;
-}
-/** The live `InputZone` share slice the rail entry reads. */
 export interface RailEntryProps {
     sessionId: string;
-    input?: {
-        draft: string;
-        occurrences: readonly RailOccurrence[];
-    };
-    inputActions?: {
-        setDraft(text: string): void;
-    };
+    input?: InputState;
+    inputActions?: InputActions;
 }
 /**
  * The composer entry that drives the rail.
@@ -87,4 +85,3 @@ export declare function openImageLightbox(imageUrl: string, title: string): void
  * @param snapshot - the session on screen and its draft's chip occurrences.
  */
 export declare function renderAttachmentBar(snapshot: RailSnapshot): void;
-export {};
