@@ -260,7 +260,8 @@ Two integration details:
 
 - `lexicon` returns **bare names** (`anh1.png`), because the render side scans the
   draft for `<trigger><name>` — the `@` is the trigger, not part of the name. The
-  draft text is therefore `@anh1.png`.
+  `@anh1.png` form is the clipboard projection; what actually sits in the draft is
+  a `U+FFFC` chip (see the insertion mechanism below).
 - `@` already carries the shipped `ui-subagent` source. Duplicate registration
   throws only on an identical `(trigger, name)` pair, so `('@', 'vision')`
   coexists; the `@` menu then shows two groups in registration order. If that
@@ -268,32 +269,67 @@ Two integration details:
   `('slash', 'vision')` pair instead — the codec contract is identical. The spike
   decides which reads better.
 
-The draft therefore shows only `@anh1.png`; the long instruction exists solely in
-the outgoing prompt. This also lets the plugin delete two existing behaviours that
-are the root cause of a known defect:
+The draft therefore shows only a compact chip; the long instruction exists solely
+in the outgoing prompt. This also lets the plugin delete two existing behaviours
+that are the root cause of a known defect:
 
 - `uploader.insertPromptIntoComposer()` — no longer called.
 - `attachment-bar.removeDraftAttachment()` overwriting the whole textarea with a
   regenerated prompt — removed; removing an attachment must not destroy text the
   user typed.
 
-**Insertion mechanism, in order of preference.** Programmatic reference insertion
-has no precedent in the repo — every shipped source is driven by the user typing
-the trigger and picking from the menu. So:
+**Insertion mechanism: mint a chip, do not write text.**
 
-- **(a)** `inputActions.setDraft(draft + '@anh1.png ')`. If the machine registers an
-  occurrence from the `lexicon` match, this is sufficient and is what ships.
-- **(b)** If (a) produces decoration but no occurrence (nothing serialized at
-  send), dispatch the scoped `slash/input-insert-reference` event with a valid
-  span. Its contract is a span CAS, so the span must be computed from the current
-  draft.
-- **(c)** If neither holds, the fallback is to keep `setDraft` for the token and
-  additionally append the instruction via `setDraft` at submit time. This
-  reintroduces visible draft text, so it is a last resort and must be reported to
-  the user rather than shipped silently.
+A reference in the draft is **one `U+FFFC` placeholder plus an entry in the
+machine's occurrence table** — it is not the literal string `@anh1.png`. That
+string is only the `clipboardText` projection. `sinkSerialized` walks
+`state.occurrences`, so writing text with `setDraft` would at best decorate and
+would not reliably serialize. `setDraft` is therefore **not** the mechanism.
 
-Which of (a)/(b)/(c) applies is the **first implementation spike**, before the
-rest of §4.3 is built.
+The plugin's composer component reads `useInput()` (the session standard kit) for
+`draft`, `draftRev` and `occurrences`, then dispatches the scoped event:
+
+```ts
+ctx.emit('slash/input-insert-reference', {
+  reference: { source: 'vision', ref: token, label: token, clipboardText: `@${token}` },
+  span: { start: draft.length, end: draft.length, draftRev },   // append position
+})
+```
+
+`TokenSpan` is `{ start, end, draftRev }` and its contract is *"CAS: stale draftRev
+⇒ the whole action no-ops"* — supplying the live `draftRev` from `useInput` is what
+makes the insert land.
+
+**The one spike** is whether that scoped event is reachable from a plugin's own
+component rather than only from inside `ui-conversation` (every shipped source is
+driven by a menu pick, which receives its span from the pipeline). This is
+verified **first**, before the rest of §4.3 is built. If the event proves
+unreachable, the fallback is the `+`-menu command path — a menu pick does supply a
+valid span — and that limitation is reported to the user rather than shipped
+silently.
+
+### 4.3.1 Lifecycle: one-shot per send
+
+Attachments are consumed by the message that sends them. The **next** message
+injects nothing unless the user attaches again.
+
+This falls out of the mechanism instead of needing extra bookkeeping: injection
+happens only for occurrences present in the draft, and DSH clears the draft when a
+send settles. After send → no occurrences → `codec.serialize` is never called →
+nothing is injected. The plugin must honour three rules to keep it that way:
+
+1. **No pending-attachment queue.** Nothing may re-inject on a later message by
+   itself. The draft's occurrences are the sole source of truth for what gets
+   serialized.
+2. **The composer rail shows only what is currently referenced** — driven by
+   `input.occurrences`, so it empties itself when the draft clears.
+3. **`/uploads` is history, not a queue.** It lists everything uploaded in the
+   session for re-reference. Re-referencing is an explicit user action that mints
+   a new chip, which is what makes the instruction appear for that message.
+
+Because injection is draft-driven, a stale token cannot leak into a later message
+even though the plugin keeps its records: a record only resolves a chip that is
+already in the draft.
 
 ### 4.4 Vision settings section (`settings.section`)
 
@@ -320,12 +356,16 @@ A plugin-owned page registered with its own `id` and an `order` after the shippe
   → pickFilesFromBrowser → optimizeImageIfNeeded → uploadMultipleFiles
   → POST /api/vision-plugin/upload  (host writes <workspace>/uploads/<session>/…)
   → attachment record { token, relativePath, isPhoto } in plugin state
-  → inputActions.setDraft(draft + '@<token> ')          // §4.3 (a)
+  → ctx.emit('slash/input-insert-reference', { reference, span })   // §4.3 — mints the chip
 
 user presses send
-  → facade.sinkSerialized() walks draft occurrences
+  → facade.sinkSerialized() walks the draft's occurrences
   → codec.serialize(token) → full instruction text
   → session.prompt([...images, { type: 'text', text }], mode)
+  → DSH clears the draft → occurrences empty → rail empties → nothing pending
+
+next message, no new attach
+  → no occurrences → codec never called → no instruction injected   // §4.3.1
 ```
 
 Attachment state is keyed by session and persisted the way the current plugin
@@ -338,7 +378,8 @@ working across reloads.
 
 | Risk | Mitigation |
 |---|---|
-| Programmatic reference insertion unproven (§4.3) | Spike first; documented fallback ladder (a)/(b)/(c) |
+| Programmatic chip minting from a plugin component unproven (§4.3) | Spike the scoped `slash/input-insert-reference` event first; fallback is the `+`-menu path (a menu pick supplies a valid span), reported to the user if taken |
+| An attachment leaks into a later message (§4.3.1) | Injection is draft-occurrence-driven only; no pending queue; rail reads `input.occurrences`; checklist item in §7 |
 | Re-implemented model selector drifts from upstream behaviour | Keep the surface minimal (no two-level menu); pin the behaviours listed in §4.1; the `/model` popup command remains the full-featured path |
 | Runtime import of a non-platform module inlines a duplicate copy | Enforce type-only imports + `ctx.get()`; §2.4 states the rule |
 | Settings write clobbers sibling fields | Read-modify-write the model entry, preserve unknown keys |
@@ -354,8 +395,9 @@ working across reloads.
   handling.
 - The reference codec's `serialize` is pure and directly unit-testable.
 - Manual verification checklist: attach a photo with the model seat showing a
-  vision-capable model; confirm the draft shows only the token; confirm the sent
-  message contains the instruction; confirm removing an attachment leaves typed
+  vision-capable model; confirm the draft shows only a chip; confirm the sent
+  message contains the instruction; **confirm the immediately following message
+  contains no instruction (§4.3.1)**; confirm removing an attachment leaves typed
   text intact; confirm the effort menu lists only declared efforts plus Custom;
   confirm the settings toggle round-trips to `web-search.json`.
 
