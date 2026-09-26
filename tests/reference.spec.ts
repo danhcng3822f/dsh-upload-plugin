@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createVisionSource } from '../src/client/reference.js'
+import { createVisionSource, mintChip } from '../src/client/reference.js'
 import { AttachmentStore } from '../src/client/attachment-store.js'
 import { makeRef } from '../src/client/attachments.js'
 
@@ -59,5 +59,64 @@ describe('createVisionSource', () => {
   it('lists the session tokens as the lexicon', () => {
     const source = createVisionSource(storeWith('s1', 'a.png'))
     expect(source.lexicon(session('s1'))).toEqual(['a.png'])
+  })
+})
+
+const record = (token: string, isPhoto = true) => ({
+  token,
+  ref: makeRef('abc12345', token),
+  relativePath: `uploads/s1/${token}`,
+  isPhoto, size: 1, uploadedAt: 1,
+})
+
+/** What `mintChip` is expected to hand the scoped consumer. */
+interface MintedPayload {
+  reference: { source: string; ref: string; label: string; clipboardText: string }
+  span: { start: number; end: number; draftRev: number }
+}
+
+/**
+ * A fake `sessions` facade: `scope('s1')` yields a context whose `bail` records the
+ * event and payload it received and answers `result`. Plain object literals are the
+ * whole dependency, which is why `mintChip` is testable without a DOM or a harness.
+ */
+function fakeSessions(result: unknown) {
+  const calls: { event: string; payload: MintedPayload }[] = []
+  const actx = {
+    bail(_ctx: unknown, event: string, payload: unknown) {
+      calls.push({ event, payload: payload as MintedPayload })
+      return result
+    },
+  }
+  return { calls, facade: { scope: (id: string) => (id === 's1' ? actx : undefined) } }
+}
+
+describe('mintChip', () => {
+  it('returns false when the session is not scoped', () => {
+    const { facade } = fakeSessions(true)
+    expect(mintChip(facade, 'unknown-session', { draft: 'hi', draftRev: 3 }, record('a.png'))).toBe(false)
+  })
+
+  it('returns false when there is no sessions facade at all', () => {
+    expect(mintChip(undefined, 's1', { draft: 'hi', draftRev: 3 }, record('a.png'))).toBe(false)
+  })
+
+  it('bails the insert-reference event with a zero-width span at the live draft revision', () => {
+    const { calls, facade } = fakeSessions(true)
+    const r = record('a.png')
+    expect(mintChip(facade, 's1', { draft: 'look at ', draftRev: 7 }, r)).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.event).toBe('slash/input-insert-reference')
+    expect(calls[0]?.payload.reference).toEqual({
+      source: 'vision', ref: r.ref, label: 'a.png', clipboardText: '@a.png',
+    })
+    // Zero-width at the end of the draft, carrying the LIVE revision — the CAS
+    // contract that lets the insert land instead of being dropped as stale.
+    expect(calls[0]?.payload.span).toEqual({ start: 8, end: 8, draftRev: 7 })
+  })
+
+  it('returns false when bail does not answer a literal true', () => {
+    const { facade } = fakeSessions(undefined)
+    expect(mintChip(facade, 's1', { draft: 'hi', draftRev: 3 }, record('a.png'))).toBe(false)
   })
 })
