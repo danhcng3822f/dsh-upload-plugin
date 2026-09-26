@@ -1,8 +1,7 @@
 import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client';
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection';
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client';
-export interface ModelSeatProps {
-    locked: boolean;
+export interface EffortControlProps {
     available: boolean;
     /**
      * The session's shared directory store, as `ModelSelectInjected` publishes it
@@ -15,4 +14,4 @@ export interface ModelSeatProps {
     select: (selection: ModelSelection) => Promise<boolean>;
     onError: (message: string) => void;
 }
-export declare function ModelSeat({ locked, available, directory, load, select, onError }: ModelSeatProps): import("react").JSX.Element | null;
+export declare function EffortControl({ available, directory, load, select, onError }: EffortControlProps): import("react").JSX.Element | null;

@@ -1,12 +1,13 @@
 /**
- * The composer's model seat, taken over so the effort control can sit to the
- * right of the model name.
+ * The composer's reasoning-effort control.
  *
- * `conversation.input.model` is a `single` slot: taking it means rendering the
- * whole model affordance, so this component re-implements the shipped selector's
- * observable behaviour (provider-grouped list, loading / whole-request error /
- * per-provider failure states with a retry, locked, subagent exclusion, a
- * transient toast on rejection) and adds the effort half.
+ * It registers into `conversation.input.right`, so it renders to the LEFT of the
+ * model seat — the model seat itself is left to the harness's shipped selector,
+ * which owns the model list, its failure states and its retry.
+ *
+ * The menu is built from the Host's per-model effort vocabulary
+ * (`model.reasoning.efforts`) plus one Custom row, so it can never offer a level
+ * the Host would reject. A model that declares no reasoning renders nothing.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -15,8 +16,7 @@ import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selec
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { effortChoices, effortLabel, type ReasoningInfo } from '../effort.js'
 
-export interface ModelSeatProps {
-  locked: boolean
+export interface EffortControlProps {
   available: boolean
   /**
    * The session's shared directory store, as `ModelSelectInjected` publishes it
@@ -46,33 +46,33 @@ function usableReasoning(reasoning: ReasoningInfo | undefined): ReasoningInfo | 
   return reasoning
 }
 
-export function ModelSeat({ locked, available, directory, load, select, onError }: ModelSeatProps) {
+export function EffortControl({ available, directory, load, select, onError }: EffortControlProps) {
   const [snapshot, setSnapshot] = useState(() => directory.getSnapshot())
-  const [open, setOpen] = useState<'none' | 'model' | 'effort'>('none')
+  const [open, setOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
   const [customValue, setCustomValue] = useState('')
   const [toast, setToast] = useState<{ seq: number; text: string } | null>(null)
   const toastSeq = useRef(0)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  /**
-   * Which operation the directory's error text belongs to. A rejected SELECTION
-   * writes `error` and leaves it set, so a retry that ran `load()` would clear the
-   * strip and read as recovery while the selection was never applied. The shipped
-   * selector guards the same way (`ModelSelect.tsx:59,274`).
-   */
-  const lastActionRef = useRef<'load' | 'select'>('load')
 
   useEffect(() => directory.subscribe(() => { setSnapshot(directory.getSnapshot()) }), [directory])
+
+  /**
+   * Load the catalog on mount. This component reads the current model's reasoning
+   * out of the same directory the shipped selector reads, and that directory does
+   * not fetch on its own — the selector loads it when its menu opens. Without this
+   * the control would render nothing until the user happened to open the model
+   * menu first.
+   */
   useEffect(() => {
     if (!available) return
-    lastActionRef.current = 'load'
     load()
   }, [available, load])
 
   useEffect(() => {
-    if (open === 'none') return
+    if (!open) return
     const closeOutside = (event: MouseEvent): void => {
-      if (!rootRef.current?.contains(event.target as Node)) { setOpen('none'); setCustomOpen(false) }
+      if (!rootRef.current?.contains(event.target as Node)) { setOpen(false); setCustomOpen(false) }
     }
     document.addEventListener('mousedown', closeOutside)
     return () => { document.removeEventListener('mousedown', closeOutside) }
@@ -96,6 +96,7 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
   )
 
   if (!available) return null
+  if (reasoning === undefined) return null
 
   /**
    * A rejected selection: announce it, and keep the diagnostic channel.
@@ -107,7 +108,7 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
    * @param accepted - whether the directory took the selection.
    */
   const settle = (accepted: boolean): void => {
-    if (accepted) { setOpen('none'); setCustomOpen(false); return }
+    if (accepted) { setOpen(false); setCustomOpen(false); return }
     const message = directory.getSnapshot().error ?? 'Không đổi được model'
     onError(message)
     // A fresh seq per show: the Toast restarts its own cycle by being remounted.
@@ -115,91 +116,25 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
     setToast({ seq: toastSeq.current, text: message })
   }
 
-  const submit = (selection: ModelSelection): void => {
-    lastActionRef.current = 'select'
-    void select(selection).then(settle)
-  }
-
-  /** Re-run the catalog load — the only retry the failure strip may offer. */
-  const reload = (): void => {
-    lastActionRef.current = 'load'
-    load()
-  }
-
   const chooseEffort = (effort: string | undefined): void => {
     if (current === null || effort === undefined) return
-    submit({ provider: current.provider, model: current.model, reasoningEffort: effort })
+    // Re-apply the SAME route with the new level: only `reasoningEffort` changes,
+    // so the provider and model come from the session's current selection.
+    void select({ provider: current.provider, model: current.model, reasoningEffort: effort }).then(settle)
   }
 
   return (
     <div ref={rootRef} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <button
         type="button"
-        disabled={locked}
         aria-haspopup="menu"
-        aria-expanded={open === 'model'}
-        onClick={() => { setOpen(open === 'model' ? 'none' : 'model'); setCustomOpen(false) }}
+        aria-expanded={open}
+        onClick={() => { setOpen(!open); setCustomOpen(false) }}
       >
-        {currentModel?.name ?? 'Chọn model'}
+        {effortLabel(reasoning, current?.reasoningEffort) ?? '—'}
       </button>
 
-      {reasoning !== undefined && (
-        <button
-          type="button"
-          disabled={locked}
-          aria-haspopup="menu"
-          aria-expanded={open === 'effort'}
-          onClick={() => { setOpen(open === 'effort' ? 'none' : 'effort'); setCustomOpen(false) }}
-        >
-          {effortLabel(reasoning, current?.reasoningEffort) ?? '—'}
-        </button>
-      )}
-
-      {open === 'model' && (
-        <div role="menu">
-          {snapshot.status === 'loading' && <div>Đang tải…</div>}
-          {/* One strip for both failure kinds: the whole-request error, and the
-              per-provider failures a partly successful load leaves behind. A
-              failed provider keeps `error` null (the directory writes `failures`
-              and clears `error` in the same update) and is simply absent from
-              `groups`, so without this row it would be a dead end — no strip, no
-              retry, and no sign of why the provider is missing.
-              The load error and its retry are gated on the last action: a
-              rejected selection also leaves `error` set, and a `Thử lại` that
-              re-ran `load()` would clear that message and report success for a
-              selection that never landed. */}
-          {((snapshot.error !== null && lastActionRef.current === 'load') || snapshot.failures.length > 0) && (
-            <div>
-              {snapshot.error !== null && lastActionRef.current === 'load' && <span>{snapshot.error}</span>}
-              {snapshot.failures.map(failure => (
-                <div key={failure.id}>
-                  <span>{`${failure.name} tải thất bại: ${failure.message}`}</span>
-                </div>
-              ))}
-              <button type="button" onClick={reload}>Thử lại</button>
-            </div>
-          )}
-          {snapshot.groups.map(group => (
-            <section key={group.id}>
-              <div>{group.name}</div>
-              {group.models.map(model => (
-                <button
-                  key={model.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={current?.provider === group.id && current.model === model.id}
-                  disabled={snapshot.status === 'selecting'}
-                  onClick={() => { submit({ provider: group.id, model: model.id }) }}
-                >
-                  {model.name}
-                </button>
-              ))}
-            </section>
-          ))}
-        </div>
-      )}
-
-      {open === 'effort' && (
+      {open && (
         <div role="menu">
           {/* Only the Host-declared efforts are radio rows; Custom… is a button
               that opens a text input instead. `effortChoices` marks a row

@@ -42,9 +42,10 @@ Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add p
    - Rail hiển thị đúng những tệp mà bản nháp hiện tại đang tham chiếu, nên gửi xong rail tự trống.
    - Bấm `✕` để gỡ một đính kèm: chỉ chip tương ứng bị xoá khỏi bản nháp, **phần chữ bạn đã gõ được giữ nguyên**.
 
-9. **Ghế model + effort hợp nhất**:
-   - Nút model và nút effort nằm cạnh nhau trong cùng một ghế.
+9. **Nút reasoning effort**:
+   - Nút effort nằm trong tool row của composer, **bên trái nút chọn model**. Nút chọn model vẫn là của DeepSeek Harness — plugin không chiếm ghế đó.
    - Danh sách effort lấy từ **chính model khai báo trên Host** (`reasoning.efforts`), cộng thêm một dòng **Custom…** để bạn tự nhập giá trị khác. Model không khai báo effort thì không hiện nút effort.
+   - Model tự khai trong settings (`llm-pi-ai.providers.<provider>.models`) **phải có `reasoningEfforts`** thì Host mới báo model đó có reasoning và nút mới hiện. Ví dụ: `"reasoningEfforts": { "off": null, "low": "low", "medium": "medium", "high": "high" }` — mỗi khoá là mức hiện trong menu, mỗi giá trị là chuỗi gửi lên provider; `off` để `null` nghĩa là "được hỗ trợ, gửi không tham số".
 
 ---
 
@@ -146,12 +147,13 @@ dsh-upload-plugin/
 │       ├── instruction.ts    # Câu chỉ dẫn đọc tệp (sinh ra lúc gửi)
 │       ├── effort.ts         # Dựng menu reasoning effort từ metadata của Host
 │       ├── vision-setting.ts # Đọc-sửa-ghi trường `input` của một dòng model
+│       ├── platform-modules.d.ts # Khai báo kiểu cho platform module không cài được qua npm
 │       ├── composer/
 │       │   ├── attach-buttons.tsx # Hai nút 📷 / 📄 trên thanh công cụ composer
-│       │   └── model-seat.tsx     # Ghế model + effort hợp nhất
+│       │   └── effort-control.tsx # Nút reasoning effort (bên trái nút chọn model)
 │       ├── settings/
 │       │   └── vision-section.tsx # Trang Settings → Vision
-│       └── uploader.ts       # File picker, nén ảnh, upload và sinh prompt
+│       └── uploader.ts       # File picker, nén ảnh và upload
 ├── lib/
 │   ├── index.js              # Host bundle đã biên dịch
 │   └── client.js             # Client bundle trình duyệt (Web)
