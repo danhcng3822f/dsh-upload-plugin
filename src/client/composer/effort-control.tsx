@@ -10,11 +10,37 @@
  * the Host would reject. A model that declares no reasoning renders nothing.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutline14, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { effortChoices, effortLabel, type ReasoningInfo } from '../effort.js'
+
+/**
+ * The trigger and its menu, styled from the shell's own tokens so the control
+ * reads as part of the composer rather than beside it.
+ *
+ * A bare `<button>` takes the browser's default fill and border, which is what
+ * made this plugin's controls look foreign; `Button` supplies the
+ * `--dsw-alias-button-*` chrome instead. The menu card copies the geometry the
+ * shell's `Menu` primitive uses for its own list — 12px radius, inverted
+ * hairline, `--dsw-specific-menu` fill, `--dsw-shadow-lv3` — and opens upward
+ * because the composer sits at the bottom of the viewport.
+ */
+const ROOT_STYLE = { position: 'relative', display: 'inline-flex', alignItems: 'center' } as const
+const MENU_STYLE = {
+  position: 'absolute',
+  bottom: 'calc(100% + 4px)',
+  left: 0,
+  zIndex: 20,
+  minWidth: 160,
+  padding: 4,
+  border: '1px solid var(--dsw-alias-border-inverted)',
+  borderRadius: 12,
+  background: 'var(--dsw-specific-menu)',
+  boxShadow: 'var(--dsw-shadow-lv3)',
+} as const
+const ROW_STYLE = { width: '100%', justifyContent: 'flex-start' } as const
 
 export interface EffortControlProps {
   available: boolean
@@ -124,18 +150,21 @@ export function EffortControl({ available, directory, load, select, onError }: E
   }
 
   return (
-    <div ref={rootRef} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <button
-        type="button"
+    <div ref={rootRef} style={ROOT_STYLE}>
+      <Button
+        variant="toolbar"
+        size="sm"
         aria-haspopup="menu"
         aria-expanded={open}
+        title="Mức suy luận"
         onClick={() => { setOpen(!open); setCustomOpen(false) }}
       >
         {effortLabel(reasoning, current?.reasoningEffort) ?? '—'}
-      </button>
+        <IconChevronDownOutline14 size={14} />
+      </Button>
 
       {open && (
-        <div role="menu">
+        <div role="menu" style={MENU_STYLE}>
           {/* Only the Host-declared efforts are radio rows; Custom… is a button
               that opens a text input instead. `effortChoices` marks a row
               selected only for an effort the catalog declares, so an effective
@@ -146,20 +175,25 @@ export function EffortControl({ available, directory, load, select, onError }: E
               left as is: the trigger carries the value, and Custom… is the
               affordance for entering another one. */}
           {choices.filter(choice => !choice.custom).map(choice => (
-            <button
+            <Button
               key={choice.key}
-              type="button"
+              variant="ghost"
+              size="sm"
+              style={ROW_STYLE}
               role="menuitemradio"
               aria-checked={choice.selected}
               disabled={snapshot.status === 'selecting'}
               onClick={() => { chooseEffort(choice.effort) }}
             >
               {choice.label}
-            </button>
+            </Button>
           ))}
-          <button type="button" onClick={() => { setCustomOpen(true) }}>Custom…</button>
+          <Button variant="ghost" size="sm" style={ROW_STYLE} onClick={() => { setCustomOpen(true) }}>
+            Custom…
+          </Button>
           {customOpen && (
             <form
+              style={{ display: 'flex', gap: 4, padding: 4 }}
               onSubmit={(event) => {
                 event.preventDefault()
                 // The submitted effort is the raw trimmed string, and an empty
@@ -174,7 +208,7 @@ export function EffortControl({ available, directory, load, select, onError }: E
                 placeholder="reasoning effort"
                 aria-label="Custom reasoning effort"
               />
-              <button type="submit">OK</button>
+              <Button variant="ghost" size="sm" type="submit">OK</Button>
             </form>
           )}
         </div>

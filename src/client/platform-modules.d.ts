@@ -59,6 +59,40 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
     anchor?: HTMLElement | null
     onDone: () => void
   }): import('react').ReactElement
+
+  /** Visual variant, each backed by its `--dsw-alias-button-*` token family. */
+  export type ButtonVariant = 'primary' | 'ghost' | 'outline' | 'toolbar'
+
+  /**
+   * Token-styled button atom (`ui-primitives/src/Button.tsx:18-31`). Using it is
+   * what makes a plugin's controls inherit the shell's chrome: a bare `<button>`
+   * gets the browser's own fill and border, which is what made this plugin's
+   * composer controls read as foreign.
+   * @param props.variant - visual family (default `'ghost'`).
+   * @param props.size - `'md'` 36px capsule or `'sm'` 28px compact.
+   * @param props.icon - optional leading 16px icon node.
+   */
+  export function Button(props: {
+    variant?: ButtonVariant
+    size?: 'md' | 'sm'
+    icon?: import('react').ReactNode
+    className?: string | undefined
+    children?: import('react').ReactNode
+  } & import('react').ButtonHTMLAttributes<HTMLButtonElement>): import('react').ReactElement
+
+  /** Shared props for every `ic_ds_*` icon (`ui-primitives/src/icons/props.ts:2-8`). */
+  export interface IconProps {
+    /** Square edge in px; defaults to the glyph's own drawn size. */
+    size?: number | undefined
+    /** Extra class for layout placement; color rides `currentColor`. */
+    className?: string | undefined
+  }
+
+  /** `ic_ds_paperclip_outline_16` (`ui-primitives/src/icons/index.tsx:523-530`). */
+  export function IconPaperclipOutline16(props: IconProps): import('react').ReactElement
+
+  /** `ic_ds_chevron_down_outline_14` (`ui-primitives/src/icons/index.tsx:161-169`). */
+  export function IconChevronDownOutline14(props: IconProps): import('react').ReactElement
 }
 
 declare module '@deepseek-ai/dsh-brand' {

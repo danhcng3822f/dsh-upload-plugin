@@ -6,11 +6,23 @@
  * instruction text is produced later, by the reference codec at send time.
  */
 import { useCallback, useRef, useState } from 'react'
+import { Button, IconPaperclipOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InputState } from '@deepseek-ai/dsh-client-ui-conversation'
 import type { AttachmentStore } from '../attachment-store.js'
 import type { AttachmentRecord } from '../attachments.js'
 import { mintChip, nextChipCursor } from '../reference.js'
 import { pickFilesFromBrowser, uploadMultipleFiles } from '../uploader.js'
+import { IconCameraOutline16 } from './icons.js'
+
+/**
+ * Icon-only form for these two controls.
+ *
+ * `Button size="sm"` is a 28px-tall pill with `padding: 0 10px`, sized for a
+ * label. The shell's own icon button is a 28x28 square (its stylesheet names
+ * `Icon_container 28x28` as the icon-only form), so the box is squared here
+ * while the variant keeps supplying the token fill and its hover state.
+ */
+const ICON_BUTTON = { width: 28, padding: 0 } as const
 
 /**
  * The `InputZone` owner share this slot delivers (point-in-time snapshots), as
@@ -77,24 +89,26 @@ export function AttachButtons({ sessionId, input, store, sessions, notify }: Att
 
   return (
     <>
-      <button
-        type="button"
+      <Button
+        variant="toolbar"
+        size="sm"
+        icon={<IconCameraOutline16 size={16} />}
+        style={ICON_BUTTON}
         title="Thêm ảnh"
         aria-label="Thêm ảnh"
         disabled={busy}
         onClick={() => { void attach(true) }}
-      >
-        📷
-      </button>
-      <button
-        type="button"
+      />
+      <Button
+        variant="toolbar"
+        size="sm"
+        icon={<IconPaperclipOutline16 size={16} />}
+        style={ICON_BUTTON}
         title="Thêm tệp"
         aria-label="Thêm tệp"
         disabled={busy}
         onClick={() => { void attach(false) }}
-      >
-        📄
-      </button>
+      />
     </>
   )
 }
