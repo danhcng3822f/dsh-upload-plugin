@@ -66,18 +66,29 @@ async function attachFiles(
   }
 
   const sessions = ctx.get('sessions') as any
-  const state = sessionInput(ctx, sessionId)?.state?.getSnapshot?.()
-  if (state === undefined || state === null) {
+  // Pre-flight only: it keeps an unusable session from uploading anything.
+  const ready = sessionInput(ctx, sessionId)?.state?.getSnapshot?.()
+  if (ready === undefined || ready === null) {
     notifySession(ctx, sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
     return
   }
 
   const responses = await uploadMultipleFiles(sessionId, files, isPhoto)
 
-  // `draftRev` is a CAS token. Advance the cursor only after a mint really
-  // landed: a refused mint leaves the draft untouched, so the next iteration must
-  // reuse the same pair or its CAS is stale too.
-  let cursor = { draft: state.draft, draftRev: state.draftRev }
+  // Re-read after the upload: `draftRev` is a CAS token, and any keystroke during
+  // a multi-second upload invalidates the pre-upload read — seeding the cursor
+  // from it would fail every mint and lose an attachment that did upload. The loop
+  // below is synchronous, so this read is the only freshness the CAS needs.
+  const live = sessionInput(ctx, sessionId)?.state?.getSnapshot?.()
+  if (live === undefined || live === null) {
+    notifySession(ctx, sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
+    return
+  }
+
+  // Advance the cursor only after a mint really landed: a refused mint leaves the
+  // draft untouched, so the next iteration must reuse the same pair or its CAS is
+  // stale too.
+  let cursor = { draft: live.draft, draftRev: live.draftRev }
 
   for (let i = 0; i < responses.length; i++) {
     const response = responses[i]
