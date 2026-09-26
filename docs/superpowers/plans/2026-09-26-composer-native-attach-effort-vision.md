@@ -458,6 +458,11 @@ function memoryStorage(): KeyValueStorage & { dump: () => Record<string, string>
     getItem: k => map.get(k) ?? null,
     setItem: (k, v) => { map.set(k, v) },
     removeItem: k => { map.delete(k) },
+    // localStorage's enumeration surface. `byRef` scans persisted sessions with
+    // it, so a store reopened over the same storage can still resolve a ref it
+    // never cached — which is the case a draft restored after a reload hits.
+    get length() { return map.size },
+    key: i => [...map.keys()][i] ?? null,
     dump: () => Object.fromEntries(map),
   }
 }
@@ -537,6 +542,14 @@ export interface KeyValueStorage {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+  /**
+   * Enumeration surface. `localStorage` provides it and `byRef` depends on it: a
+   * chip restored together with a persisted draft after a reload must resolve
+   * against a session this store has not cached yet. A storage without it still
+   * serves everything except cross-session `byRef`.
+   */
+  readonly length?: number
+  key?(index: number): string | null
 }
 
 const PREFIX = 'dsh_vision_attachments_'
@@ -646,14 +659,12 @@ export class AttachmentStore {
 
   /** Number of persisted keys, when the storage exposes enumeration. */
   private storageLength(): number {
-    const withLength = this.storage as KeyValueStorage & { length?: number }
-    return typeof withLength.length === 'number' ? withLength.length : 0
+    return typeof this.storage.length === 'number' ? this.storage.length : 0
   }
 
   /** Nth persisted key, when the storage exposes enumeration. */
   private storageKeyAt(index: number): string | null {
-    const withKey = this.storage as KeyValueStorage & { key?: (i: number) => string | null }
-    return typeof withKey.key === 'function' ? withKey.key(index) : null
+    return typeof this.storage.key === 'function' ? this.storage.key(index) : null
   }
 }
 ```
