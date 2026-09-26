@@ -3,6 +3,7 @@ import { createElement } from 'react'
 import { AttachmentStore } from './attachment-store.js'
 import { AttachmentRailEntry, bindAttachmentStore } from './attachment-bar.js'
 import { AttachButtons } from './composer/attach-buttons.js'
+import { ModelSeat } from './composer/model-seat.js'
 import { registerVisionCommands } from './commands.js'
 import { createVisionSource, type VisionSource } from './reference.js'
 
@@ -71,5 +72,47 @@ export function apply(ctx: Context): void {
       id: 'vision-rail',
       order: 11,
     }, AttachmentRailEntry))
+  })
+
+  // Task 8 — the model seat, taken over so the effort control can sit to its
+  // right. `conversation.input.model` is a `single` slot, so this replaces the
+  // shipped `ui-model-selection` occupant rather than adding beside it; the
+  // `@deepseek-ai/dsh-client-ui-model-selection` edge in `dsh.client.inject`
+  // makes that occupant's fiber activate first, so whenever it is present it is
+  // already registered when ours lands. The brief writes the element inline as
+  // JSX; `index.ts` is a `.ts` file, which the TypeScript parser refuses to read
+  // as JSX (TS1005), so the component itself is handed to the registry instead —
+  // the outlet delivers the same component the same props it reads.
+  ctx.inject(['slots', 'sessions', 'modelDirectories'], (scoped: Context) => {
+    const slots = scoped.get('slots') as any
+    const sessions = scoped.get('sessions') as any
+    const directories = scoped.get('modelDirectories') as any
+    slots.inject('conversation.input.model', () => slots.register({
+      name: 'conversation.input.model',
+      // A single slot throws on a second registration at the occupied cell's own
+      // priority (`SlotCore.register`: "single slot ... already has a
+      // registration at priority 0"), and the shipped occupant registers at the
+      // default 0. A LOWER rank shadows it instead — a cell renders its lowest
+      // live entry — which is how ui-subagent takes `conversation.composer`.
+      priority: -1,
+      // The render machinery memoizes an entry's inject face per entry x session
+      // scope (web-react `scoped-slots.tsx`, sessionInjectCache), so `load` and
+      // `select` keep their identity across re-renders and the seat's mount
+      // effect fires once per session. Built inline in a render callback
+      // instead, `load` would be a fresh function on every composer render and
+      // that effect would re-issue `session.models` on every keystroke.
+      inject: (sessionId: string) => {
+        const available = sessions?.subagentAddress?.(sessionId) === undefined
+        const directory = directories.directoryFor(sessionId)
+        return {
+          available,
+          directory: directory.store,
+          load: () => { if (available) directory.load().catch(() => {}) },
+          select: (selection: { provider: string; model: string; reasoningEffort?: string }) =>
+            available ? directory.select(selection).then(() => true, () => false) : Promise.resolve(false),
+          onError: (message: string) => { console.warn('[dsh-upload-plugin] model seat:', message) },
+        }
+      },
+    }, ModelSeat))
   })
 }
