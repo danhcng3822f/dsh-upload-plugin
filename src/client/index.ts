@@ -54,6 +54,14 @@ export function apply(ctx: Context): void {
         store,
         sessions,
         notify,
+        // R25-B1 — the native intake face. `conversation` is already resolved
+        // above for the notice channel; `inputActions` and `useProjection` are
+        // the session standard kit's own seats, delivered to every session-scope
+        // slot entry (`web-react/src/scoped-slots.tsx:376-378`) and the same two
+        // the composer's bar reads (`InputBar.tsx:48-51,91`).
+        conversation,
+        inputActions: props.inputActions,
+        useProjection: props.useProjection,
       })
     }))
   })

@@ -211,6 +211,14 @@ declare module '@deepseek-ai/dsh-client-ui-conversation' {
   /** Browser-runtime identity of one unsent image draft. */
   export type DraftAttachmentId = import('@deepseek-ai/dsh-brand').Branded<'DraftAttachmentId'>
 
+  /** Browser-owned image that has not crossed the durable host boundary (`contract/slots.ts:25-31`). */
+  export interface ComposerAttachment {
+    kind: 'image'
+    id: DraftAttachmentId
+    file: File
+    previewUrl: string
+  }
+
   /** Half-open [start, end) range/selection in draft character coordinates. */
   export interface EditSelection {
     readonly start: number
