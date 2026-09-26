@@ -1,45 +1,77 @@
-import { formatFileSize, generateDraftPrompt } from './uploader.js'
+import { useEffect } from 'react'
+import type { AttachmentStore } from './attachment-store.js'
+import { activeTokens, VISION_SOURCE, type AttachmentRecord, type ChipOccurrence } from './attachments.js'
+import { formatFileSize } from './uploader.js'
 
-export interface SessionUploadRecord {
-  id: string
-  name: string
-  relativePath: string
-  size: number
-  isPhoto: boolean
-  previewUrl?: string
-  uploadedAt: number
+/** The placeholder one chip occupies in the draft; an occurrence covers exactly `[offset, offset + 1)`. */
+const CHIP_PLACEHOLDER = '\uFFFC'
+
+/**
+ * One live-draft snapshot: the session on screen and the chips its draft holds
+ * right now. This is the rail's only data source — a record list of its own
+ * would keep showing attachments the sent message already consumed.
+ */
+export interface RailSnapshot {
+  sessionId: string
+  occurrences: readonly ChipOccurrence[]
 }
 
-const STORAGE_PREFIX = 'dsh_vision_uploads_'
+/**
+ * The record index chips resolve against: the one store the attach buttons
+ * write, bound by the plugin entry.
+ *
+ * It must be that same instance. `AttachmentStore` caches a session's records
+ * after its first `list`, so a second instance over the same localStorage would
+ * overwrite the first one's writes and hide records the draft still points at.
+ */
+let store: AttachmentStore | undefined
 
-export function getSessionUploads(sessionId: string): SessionUploadRecord[] {
-  try {
-    const raw = localStorage.getItem(`${STORAGE_PREFIX}${sessionId}`)
-    if (!raw) return []
-    return JSON.parse(raw)
-  } catch {
-    return []
-  }
+/** Bind the record index (the plugin entry owns it; every other reader asks here). */
+export function bindAttachmentStore(next: AttachmentStore): void {
+  store = next
 }
 
-export function saveSessionUpload(sessionId: string, item: SessionUploadRecord): void {
-  try {
-    const existing = getSessionUploads(sessionId)
-    const updated = [item, ...existing.filter(x => x.relativePath !== item.relativePath)]
-    localStorage.setItem(`${STORAGE_PREFIX}${sessionId}`, JSON.stringify(updated.slice(0, 50)))
-  } catch {
-    // Ignore storage quota errors
-  }
+/** The bound record index, or undefined before the plugin entry binds it. */
+export function attachmentStore(): AttachmentStore | undefined {
+  return store
 }
 
-export function saveMultipleSessionUploads(sessionId: string, items: SessionUploadRecord[]): void {
-  for (const item of items) {
-    saveSessionUpload(sessionId, item)
-  }
+/**
+ * Removes one chip from the draft. The rail builds plain DOM and holds no input
+ * machine, so the composer entry binds the session-scope `inputActions.setDraft`
+ * it receives as a slot prop.
+ */
+let removeChip: ((sessionId: string, ref: string) => void) | undefined
+
+/** Bind the draft write the rail's remove button uses. */
+export function bindChipRemover(remove: (sessionId: string, ref: string) => void): void {
+  removeChip = remove
 }
 
-// Map storing active draft attachments per session ID
-const sessionDraftMap = new Map<string, SessionUploadRecord[]>()
+/**
+ * The draft with one chip's placeholder deleted and every other character left
+ * exactly as the user typed it.
+ * @param draft - the live draft.
+ * @param offset - the occurrence's placeholder offset.
+ * @returns the next draft, or undefined when no placeholder sits at that offset —
+ * a stale offset must never eat a character the user typed.
+ */
+export function draftWithoutChip(draft: string, offset: number): string | undefined {
+  if (draft[offset] !== CHIP_PLACEHOLDER) return undefined
+  return draft.slice(0, offset) + draft.slice(offset + 1)
+}
+
+/** Host-served URL for one uploaded file (the endpoint `/uploads` previews through too). */
+export function attachmentViewUrl(sessionId: string, relativePath: string): string {
+  const file = encodeURIComponent(relativePath)
+  const session = encodeURIComponent(sessionId)
+  return `/api/vision-plugin/view?file=${file}&sessionId=${session}`
+}
+
+/** The snapshot the rail last rendered from; the session watcher re-renders from it. */
+let lastSnapshot: RailSnapshot | null = null
+/** Signature of the cards on screen, so an unchanged render costs no DOM work. */
+let lastRenderedSignature: string | null = null
 let lastActiveSessionId: string | null = null
 
 export function detectActiveSessionId(): string | null {
@@ -59,61 +91,75 @@ export function detectActiveSessionId(): string | null {
   return lastActiveSessionId
 }
 
-export function getDraftAttachments(sessionId?: string): SessionUploadRecord[] {
-  const sid = sessionId ?? detectActiveSessionId()
-  if (!sid) return []
-  return sessionDraftMap.get(sid) ?? []
+/**
+ * Remove one attachment from the draft.
+ *
+ * The chip IS the attachment: the record only resolves a chip that is already in
+ * the draft, so dropping the record alone would leave a chip whose serialization
+ * fails and block the send. This deletes just that placeholder — typed text is
+ * untouched — and the machine drops the occurrence with it, which is what takes
+ * the card off the rail.
+ * @param sessionId - the session whose draft holds the chip.
+ * @param ref - the chip's reference id.
+ */
+export function removeDraftAttachment(sessionId: string, ref: string): void {
+  removeChip?.(sessionId, ref)
 }
 
-export function addDraftAttachments(sessionId: string, newItems: SessionUploadRecord[]): void {
-  lastActiveSessionId = sessionId
-  const current = sessionDraftMap.get(sessionId) ?? []
-  sessionDraftMap.set(sessionId, [...current, ...newItems])
-  saveMultipleSessionUploads(sessionId, newItems)
-  renderAttachmentBar(sessionId)
+/**
+ * One chip occurrence as the composer share reports it: the plugin's structural
+ * `ChipOccurrence` plus the placeholder offset the remove button needs. `offset`
+ * stays optional because it belongs to an external contract — the guard for a
+ * missing one is a real branch, not dead code.
+ */
+interface RailOccurrence extends ChipOccurrence {
+  readonly offset?: number
 }
 
-export function removeDraftAttachment(id: string): void {
-  const sid = detectActiveSessionId()
-  if (!sid) return
-
-  const current = sessionDraftMap.get(sid) ?? []
-  const updated = current.filter(item => item.id !== id)
-  sessionDraftMap.set(sid, updated)
-  renderAttachmentBar(sid)
-
-  // Update composer prompt to match remaining attachments
-  const textarea = document.querySelector('textarea[data-input-target], textarea') as HTMLTextAreaElement | null
-  if (textarea) {
-    if (updated.length === 0) {
-      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
-      if (nativeSetter) {
-        nativeSetter.call(textarea, '')
-      } else {
-        textarea.value = ''
-      }
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    } else {
-      const newPrompt = generateDraftPrompt(
-        updated.map(a => ({ relativePath: a.relativePath, isPhoto: a.isPhoto }))
-      )
-      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
-      if (nativeSetter) {
-        nativeSetter.call(textarea, newPrompt)
-      } else {
-        textarea.value = newPrompt
-      }
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    }
+/** The live `InputZone` share slice the rail entry reads. */
+export interface RailEntryProps {
+  sessionId: string
+  input?: {
+    draft: string
+    occurrences: readonly RailOccurrence[]
+  }
+  inputActions?: {
+    setDraft(text: string): void
   }
 }
 
-export function clearDraftAttachments(sessionId?: string): void {
-  const sid = sessionId ?? detectActiveSessionId()
-  if (sid) {
-    sessionDraftMap.set(sid, [])
-  }
-  renderAttachmentBar(sid ?? undefined)
+/**
+ * The composer entry that drives the rail.
+ *
+ * The rail is plain DOM injected into the composer card, so something that React
+ * re-renders has to push the live draft into it. This entry is that something: it
+ * sits in the composer tool row, receives the session's `InputZone` share and the
+ * public `inputActions`, and re-renders the rail whenever either changes — which
+ * is why a sent message empties the rail with no bookkeeping of its own. It
+ * renders nothing.
+ *
+ * The rail's remove button is armed here too: it needs the draft write, which only
+ * a session-scope slot component is handed.
+ */
+export function AttachmentRailEntry({ sessionId, input, inputActions }: RailEntryProps) {
+  // No dependency array on purpose: the share is a fresh snapshot per render, and
+  // the remove button must be armed with THIS render's draft and offsets (typing
+  // before a chip shifts them). `renderAttachmentBar` skips its DOM work when the
+  // cards on screen already match, so a repeat render is cheap.
+  useEffect(() => {
+    const draft = input?.draft ?? ''
+    const occurrences = input?.occurrences ?? []
+    bindChipRemover((targetSessionId, ref) => {
+      if (targetSessionId !== sessionId) return
+      const occurrence = occurrences.find(o => o.source === VISION_SOURCE && o.ref === ref)
+      if (occurrence?.offset === undefined) return
+      const next = draftWithoutChip(draft, occurrence.offset)
+      if (next === undefined) return
+      inputActions?.setDraft(next)
+    })
+    renderAttachmentBar({ sessionId, occurrences })
+  })
+  return null
 }
 
 /**
@@ -366,19 +412,53 @@ export function openImageLightbox(imageUrl: string, title: string): void {
 }
 
 /**
- * Render attachment rail directly inside [data-composer-card="true"]
- * scoped strictly to the current session.
+ * The records whose chip is in this draft right now — the rail's whole content.
+ *
+ * `activeTokens` answers which refs are live (and drops chips whose record this
+ * store never had); `store.byRef` then resolves each one, so a chip whose record
+ * is gone renders nothing rather than a card with nothing behind it.
  */
-export function renderAttachmentBar(targetSessionId?: string): void {
-  ensureStylesInjected()
+function activeRecords(snapshot: RailSnapshot): AttachmentRecord[] {
+  if (store === undefined || snapshot.sessionId === '') return []
+  const out: AttachmentRecord[] = []
+  for (const ref of activeTokens(snapshot.occurrences, store.list(snapshot.sessionId))) {
+    const record = store.byRef(ref)
+    if (record !== undefined) out.push(record)
+  }
+  return out
+}
 
-  const sid = targetSessionId ?? detectActiveSessionId()
-  const attachments = sid ? (sessionDraftMap.get(sid) ?? []) : []
+/**
+ * Render the attachment rail for one live-draft snapshot, directly inside
+ * `[data-composer-card="true"]`.
+ *
+ * The rail shows only what the draft currently references, so a sent message
+ * empties it and a chip removed from the draft takes its card with it — no
+ * plugin-side list, and therefore nothing to go stale between sends.
+ * @param snapshot - the session on screen and its draft's chip occurrences.
+ */
+export function renderAttachmentBar(snapshot: RailSnapshot): void {
+  ensureStylesInjected()
+  lastSnapshot = snapshot
+  if (snapshot.sessionId !== '') lastActiveSessionId = snapshot.sessionId
+
+  const attachments = activeRecords(snapshot)
 
   const containerId = 'dsh-vision-attachments-rail'
-  let container = document.getElementById(containerId)
+  const container = document.getElementById(containerId)
+  const signature = `${snapshot.sessionId}\u0000${attachments.map(r => r.ref).join('\u0000')}`
 
-  if (attachments.length === 0) {
+  // The composer re-renders on every keystroke and the rail entry pushes the live
+  // draft in on each one: rebuilding identical cards would drop and re-request
+  // their thumbnails for nothing. A container that is missing (or lingering) when
+  // it should not be still re-renders — React can replace the composer card under
+  // the rail.
+  const railIsCurrent = container !== null
+  const railShouldExist = attachments.length > 0
+  if (signature === lastRenderedSignature && railIsCurrent === railShouldExist) return
+  lastRenderedSignature = signature
+
+  if (!railShouldExist) {
     if (container) container.remove()
     return
   }
@@ -390,57 +470,60 @@ export function renderAttachmentBar(targetSessionId?: string): void {
 
   const scrollDiv = composerCard.querySelector('[data-input-scroll]')
 
-  if (!container) {
-    container = document.createElement('div')
-    container.id = containerId
+  let host = container
+  if (host === null) {
+    host = document.createElement('div')
+    host.id = containerId
     if (scrollDiv) {
-      composerCard.insertBefore(container, scrollDiv)
+      composerCard.insertBefore(host, scrollDiv)
     } else {
-      composerCard.prepend(container)
+      composerCard.prepend(host)
     }
   }
 
-  container.innerHTML = ''
+  host.innerHTML = ''
 
   const rail = document.createElement('div')
   rail.className = 'dsh-vision-rail'
 
-  for (const item of attachments) {
-    if (item.isPhoto && item.previewUrl) {
+  for (const record of attachments) {
+    if (record.isPhoto) {
+      const previewUrl = attachmentViewUrl(snapshot.sessionId, record.relativePath)
+
       const photoCard = document.createElement('div')
       photoCard.className = 'dsh-vision-item dsh-vision-item-photo'
 
       const thumb = document.createElement('div')
       thumb.className = 'dsh-vision-thumb'
-      thumb.title = `Xem ảnh ${item.name}`
-      thumb.onclick = () => openImageLightbox(item.previewUrl!, item.name)
+      thumb.title = `Xem ảnh ${record.token}`
+      thumb.onclick = () => openImageLightbox(previewUrl, record.token)
 
       const img = document.createElement('img')
-      img.src = item.previewUrl
-      img.alt = item.name
+      img.src = previewUrl
+      img.alt = record.token
       thumb.appendChild(img)
       photoCard.appendChild(thumb)
 
       const removeBtn = document.createElement('button')
       removeBtn.className = 'dsh-vision-remove'
-      removeBtn.title = `Bỏ ảnh ${item.name}`
+      removeBtn.title = `Bỏ ảnh ${record.token}`
       removeBtn.innerHTML = CLOSE_ICON_SVG
       removeBtn.onclick = (e) => {
         e.stopPropagation()
-        removeDraftAttachment(item.id)
+        removeDraftAttachment(snapshot.sessionId, record.ref)
       }
       photoCard.appendChild(removeBtn)
 
       rail.appendChild(photoCard)
     } else {
-      const ext = item.name.includes('.') ? item.name.split('.').pop()!.toUpperCase() : 'FILE'
+      const ext = record.token.includes('.') ? record.token.split('.').pop()!.toUpperCase() : 'FILE'
 
       const fileCard = document.createElement('div')
       fileCard.className = 'dsh-vision-item'
 
       const cardInner = document.createElement('div')
       cardInner.className = 'dsh-vision-file-card'
-      cardInner.title = `${item.name} (${formatFileSize(item.size)})`
+      cardInner.title = `${record.token} (${formatFileSize(record.size)})`
 
       const badge = document.createElement('div')
       badge.className = 'dsh-vision-file-badge'
@@ -450,19 +533,19 @@ export function renderAttachmentBar(targetSessionId?: string): void {
       const meta = document.createElement('div')
       meta.className = 'dsh-vision-file-meta'
       meta.innerHTML = `
-        <span class="dsh-vision-file-name" title="${item.name}">${item.name}</span>
-        <span class="dsh-vision-file-size">${formatFileSize(item.size)}</span>
+        <span class="dsh-vision-file-name" title="${record.token}">${record.token}</span>
+        <span class="dsh-vision-file-size">${formatFileSize(record.size)}</span>
       `
       cardInner.appendChild(meta)
       fileCard.appendChild(cardInner)
 
       const removeBtn = document.createElement('button')
       removeBtn.className = 'dsh-vision-remove'
-      removeBtn.title = `Bỏ tệp ${item.name}`
+      removeBtn.title = `Bỏ tệp ${record.token}`
       removeBtn.innerHTML = CLOSE_ICON_SVG
       removeBtn.onclick = (e) => {
         e.stopPropagation()
-        removeDraftAttachment(item.id)
+        removeDraftAttachment(snapshot.sessionId, record.ref)
       }
       fileCard.appendChild(removeBtn)
 
@@ -470,17 +553,24 @@ export function renderAttachmentBar(targetSessionId?: string): void {
     }
   }
 
-  container.appendChild(rail)
+  host.appendChild(rail)
 }
 
-// Watch for session switches in the sidebar to re-render attachment rail for the newly active session
+// Session switches are the one change no render reports to the rail: the composer
+// card is the SAME DOM element across sessions, so the cards of the session just
+// left would otherwise stay on screen. The watcher keeps only that job — and when
+// its last snapshot belongs to another session it renders NOTHING, because cards
+// for the wrong session are worse than an empty rail.
 if (typeof window !== 'undefined') {
   let prevSessionId: string | null = null
   setInterval(() => {
     const currentSid = detectActiveSessionId()
-    if (currentSid !== prevSessionId) {
-      prevSessionId = currentSid
-      renderAttachmentBar(currentSid ?? undefined)
+    if (currentSid === prevSessionId) return
+    prevSessionId = currentSid
+    if (lastSnapshot !== null && lastSnapshot.sessionId === currentSid) {
+      renderAttachmentBar(lastSnapshot)
+      return
     }
+    renderAttachmentBar({ sessionId: currentSid ?? '', occurrences: [] })
   }, 250)
 }

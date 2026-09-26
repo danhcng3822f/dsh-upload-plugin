@@ -1,37 +1,108 @@
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  addDraftAttachments,
-  clearDraftAttachments,
-  getSessionUploads,
+  attachmentStore,
+  attachmentViewUrl,
   openImageLightbox,
-  renderAttachmentBar,
-  type SessionUploadRecord,
 } from './attachment-bar.js'
+import type { AttachmentRecord } from './attachments.js'
+import { mintChip } from './reference.js'
 import {
   checkModelVision,
   cleanDisplayName,
   fetchUploadedFiles,
-  fileToBase64,
   formatFileSize,
-  generateDraftPrompt,
-  insertPromptIntoComposer,
   pickFilesFromBrowser,
   uploadMultipleFiles,
 } from './uploader.js'
 
-function bindComposerAutoClear(): void {
-  const textarea = document.querySelector('textarea[data-input-target], textarea')
-  if (textarea && !(textarea as any).__dsh_vision_bound) {
-    (textarea as any).__dsh_vision_bound = true
-    textarea.addEventListener('keydown', (e: any) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        setTimeout(() => clearDraftAttachments(), 300)
-      }
-    })
-    const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"]')
-    sendBtn?.addEventListener('click', () => {
-      setTimeout(() => clearDraftAttachments(), 300)
-    })
+/** One `/uploads` row: what to show, plus the record a chip can point at. */
+interface UploadOption {
+  relativePath: string
+  name: string
+  size: number
+  isPhoto: boolean
+  previewUrl?: string
+  uploadedAt: number
+  /** The stored record for this file, when this plugin has one. */
+  record?: AttachmentRecord
+}
+
+/**
+ * The session's input facade, or undefined when the session is not scoped right
+ * now — the same condition `mintChip` refuses on.
+ */
+function sessionInput(ctx: Context, sessionId: string): any {
+  const sessions = ctx.get('sessions') as any
+  const actx = sessions?.scope?.(sessionId)
+  if (actx === undefined) return undefined
+  return (ctx.get('conversation') as any)?.input?.for?.(actx)
+}
+
+/** Surface one notice on the session's composer, the way the attach buttons do. */
+function notifySession(ctx: Context, sessionId: string, text: string): void {
+  const facade = sessionInput(ctx, sessionId)
+  if (typeof facade?.notify === 'function') {
+    facade.notify('error', text)
+    return
+  }
+  console.warn(`[dsh-upload-plugin] error: ${text}`)
+}
+
+/**
+ * The attach path: upload, record, chip — the same sequence the composer buttons
+ * run, against the same store and the same live draft. The chip is the only thing
+ * that carries the attachment; nothing is written into the composer text.
+ */
+async function attachFiles(
+  ctx: Context,
+  sessionId: string,
+  files: File[],
+  isPhoto: boolean
+): Promise<void> {
+  const store = attachmentStore()
+  if (store === undefined) {
+    notifySession(ctx, sessionId, 'Kho tệp đính kèm chưa sẵn sàng')
+    return
+  }
+
+  const sessions = ctx.get('sessions') as any
+  const state = sessionInput(ctx, sessionId)?.state?.getSnapshot?.()
+  if (state === undefined || state === null) {
+    notifySession(ctx, sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
+    return
+  }
+
+  const responses = await uploadMultipleFiles(sessionId, files, isPhoto)
+
+  // `draftRev` is a CAS token. Advance the cursor only after a mint really
+  // landed: a refused mint leaves the draft untouched, so the next iteration must
+  // reuse the same pair or its CAS is stale too.
+  let cursor = { draft: state.draft, draftRev: state.draftRev }
+
+  for (let i = 0; i < responses.length; i++) {
+    const response = responses[i]
+    const name = response.filename ?? files[i].name
+    if (!response.ok || response.relativePath === undefined) {
+      notifySession(ctx, sessionId, `Không tải được ${name}`)
+      continue
+    }
+
+    const token = store.nextToken(sessionId, name)
+    const record: AttachmentRecord = {
+      token,
+      ref: store.refFor(sessionId, token),
+      relativePath: response.relativePath,
+      isPhoto,
+      size: files[i].size,
+      uploadedAt: Date.now(),
+    }
+    store.add(sessionId, record)
+
+    if (!mintChip(sessions, sessionId, cursor, record)) {
+      notifySession(ctx, sessionId, `Không chèn được tham chiếu cho ${token}`)
+      continue
+    }
+    cursor = { draft: `${cursor.draft}\uFFFC `, draftRev: cursor.draftRev + 1 }
   }
 }
 
@@ -76,48 +147,9 @@ export function registerVisionCommands(ctx: Context): void {
         if (files.length === 0) return
 
         try {
-          const uploadResponses = await uploadMultipleFiles(session.sessionId, files, true)
-          const successful = uploadResponses.filter(r => r.ok && r.relativePath)
-
-          if (successful.length > 0) {
-            // Build visual attachment records with data URLs for instant preview
-            const records: SessionUploadRecord[] = []
-            for (let i = 0; i < successful.length; i++) {
-              const res = successful[i]
-              const file = files[i]
-              let previewUrl = ''
-              try {
-                const b64 = await fileToBase64(file)
-                previewUrl = `data:${file.type || 'image/png'};base64,${b64}`
-              } catch {
-                previewUrl = URL.createObjectURL(file)
-              }
-
-              const displayName = cleanDisplayName(res.filename ?? file.name)
-              records.push({
-                id: `${Date.now()}-${i}-${res.filename}`,
-                name: displayName,
-                relativePath: res.relativePath ?? `uploads/${res.filename ?? file.name}`,
-                size: file.size,
-                isPhoto: true,
-                previewUrl,
-                uploadedAt: Date.now(),
-              })
-            }
-
-            addDraftAttachments(session.sessionId, records)
-            bindComposerAutoClear()
-
-            // Insert prompt into chat composer
-            const prompt = generateDraftPrompt(
-              successful.map(r => ({ relativePath: r.relativePath!, isPhoto: true }))
-            )
-            insertPromptIntoComposer(prompt)
-          } else {
-            alert('Upload ảnh thất bại')
-          }
+          await attachFiles(ctx, session.sessionId, files, true)
         } catch (err: any) {
-          alert(`Lỗi upload ảnh: ${err?.message ?? err}`)
+          notifySession(ctx, session.sessionId, `Lỗi upload ảnh: ${err?.message ?? err}`)
         }
       },
     },
@@ -142,42 +174,16 @@ export function registerVisionCommands(ctx: Context): void {
         if (files.length === 0) return
 
         try {
-          const uploadResponses = await uploadMultipleFiles(session.sessionId, files, false)
-          const successful = uploadResponses.filter(r => r.ok && r.relativePath)
-
-          if (successful.length > 0) {
-            const records: SessionUploadRecord[] = successful.map((res, i) => {
-              const file = files[i]
-              const displayName = cleanDisplayName(res.filename ?? file.name)
-              return {
-                id: `${Date.now()}-${i}-${res.filename}`,
-                name: displayName,
-                relativePath: res.relativePath ?? `uploads/${res.filename ?? file.name}`,
-                size: file.size,
-                isPhoto: false,
-                uploadedAt: Date.now(),
-              }
-            })
-
-            addDraftAttachments(session.sessionId, records)
-            bindComposerAutoClear()
-
-            // Insert prompt into chat composer
-            const prompt = generateDraftPrompt(
-              successful.map(r => ({ relativePath: r.relativePath!, isPhoto: false }))
-            )
-            insertPromptIntoComposer(prompt)
-          } else {
-            alert('Upload file thất bại')
-          }
+          await attachFiles(ctx, session.sessionId, files, false)
         } catch (err: any) {
-          alert(`Lỗi upload file: ${err?.message ?? err}`)
+          notifySession(ctx, session.sessionId, `Lỗi upload file: ${err?.message ?? err}`)
         }
       },
     },
   })
 
-  // 3. Uploads list command (View all uploaded files strictly in this session)
+  // 3. Uploads list command (history for this session, and the explicit way to
+  //    re-reference an earlier upload: picking one mints a new chip)
   commandUi.register({
     name: 'uploads',
     description: 'Uploaded files (Xem danh sách các file/ảnh đã tải lên trong session này)',
@@ -185,31 +191,42 @@ export function registerVisionCommands(ctx: Context): void {
     ui: {
       kind: 'popupSelect',
       options: async (session: any) => {
-        // Read from local session storage first
-        const localList = getSessionUploads(session.sessionId)
+        const store = attachmentStore()
+        const records = store?.list(session.sessionId) ?? []
+        const recordByPath = new Map(records.map(r => [r.relativePath, r]))
 
-        // Try querying backend list
+        // The disk list is what /uploads is for; the records are what a chip can
+        // point at. Merged so both a file this plugin uploaded and one that
+        // predates it are listed.
         const apiRes = await fetchUploadedFiles(session.sessionId)
         const apiFiles = apiRes.ok ? apiRes.files : []
 
-        // Merge sources, preferring items with previews
-        const map = new Map<string, SessionUploadRecord>()
+        const byPath = new Map<string, UploadOption>()
         for (const f of apiFiles) {
-          map.set(f.relativePath, {
-            id: f.relativePath,
-            name: cleanDisplayName(f.name),
+          byPath.set(f.relativePath, {
             relativePath: f.relativePath,
+            name: cleanDisplayName(f.name),
             size: f.size,
             isPhoto: f.isPhoto,
             previewUrl: f.viewUrl,
             uploadedAt: f.mtime,
+            record: recordByPath.get(f.relativePath),
           })
         }
-        for (const l of localList) {
-          map.set(l.relativePath, l)
+        for (const r of records) {
+          if (byPath.has(r.relativePath)) continue
+          byPath.set(r.relativePath, {
+            relativePath: r.relativePath,
+            name: r.token,
+            size: r.size,
+            isPhoto: r.isPhoto,
+            previewUrl: attachmentViewUrl(session.sessionId, r.relativePath),
+            uploadedAt: r.uploadedAt,
+            record: r,
+          })
         }
 
-        const combined = Array.from(map.values()).sort((a, b) => b.uploadedAt - a.uploadedAt)
+        const combined = [...byPath.values()].sort((a, b) => b.uploadedAt - a.uploadedAt)
 
         if (combined.length === 0) {
           return [
@@ -223,24 +240,48 @@ export function registerVisionCommands(ctx: Context): void {
 
         return combined.map(item => ({
           id: item.relativePath,
-          label: `${item.isPhoto ? '🖼️' : '📄'} ${cleanDisplayName(item.name)}`,
+          label: `${item.isPhoto ? '🖼️' : '📄'} ${item.name}`,
           detail: `${formatFileSize(item.size)} · ${item.relativePath}`,
           raw: item,
         }))
       },
-      onSelect: async (option: any, _session: any) => {
+      onSelect: async (option: any, session: any) => {
         if (option.id === 'empty') return
 
-        const item = option.raw as SessionUploadRecord
-        const displayName = cleanDisplayName(item.name)
+        const item = option.raw as UploadOption
         if (item?.isPhoto && item?.previewUrl) {
-          openImageLightbox(item.previewUrl, displayName)
+          openImageLightbox(item.previewUrl, item.name)
         }
 
-        const prompt = item?.isPhoto
-          ? `Bạn hãy gọi tool \`read_image\` để xem và phân tích lại ảnh \`${item.relativePath}\`: `
-          : `Bạn hãy đọc nội dung file \`${item.relativePath}\` (dùng tool \`read\`) và hỗ trợ tôi: `
-        insertPromptIntoComposer(prompt)
+        const store = attachmentStore()
+        if (store === undefined) {
+          notifySession(ctx, session.sessionId, 'Kho tệp đính kèm chưa sẵn sàng')
+          return
+        }
+        const state = sessionInput(ctx, session.sessionId)?.state?.getSnapshot?.()
+        if (state === undefined || state === null) {
+          notifySession(ctx, session.sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
+          return
+        }
+
+        // Re-referencing is history, not a queue: it mints a NEW chip for this
+        // message, which is what makes the instruction appear for it. A file with
+        // no record yet (uploaded before this version, or in another tab) gets one
+        // here — a chip that resolves to nothing would block the send.
+        const token = item.record?.token ?? store.nextToken(session.sessionId, item.name)
+        const record: AttachmentRecord = item.record ?? {
+          token,
+          ref: store.refFor(session.sessionId, token),
+          relativePath: item.relativePath,
+          isPhoto: item.isPhoto,
+          size: item.size,
+          uploadedAt: Date.now(),
+        }
+        if (item.record === undefined) store.add(session.sessionId, record)
+
+        if (!mintChip(ctx.get('sessions') as any, session.sessionId, state, record)) {
+          notifySession(ctx, session.sessionId, `Không chèn được tham chiếu cho ${token}`)
+        }
       },
     },
   })

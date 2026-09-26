@@ -20,32 +20,6 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function generateDraftPrompt(items: Array<{ relativePath: string; isPhoto: boolean }>): string {
-  if (items.length === 0) return ''
-
-  const allPhotos = items.every(i => i.isPhoto)
-  if (allPhotos) {
-    if (items.length === 1) {
-      return `Tôi vừa tải lên ảnh \`${items[0].relativePath}\`. Bạn hãy gọi tool \`read_image\` để xem và phân tích ảnh này nhé: `
-    }
-    const list = items.map(i => `- \`${i.relativePath}\``).join('\n')
-    return `Tôi vừa tải lên ${items.length} ảnh sau:\n${list}\nBạn hãy gọi tool \`read_image\` lần lượt để xem và phân tích các ảnh này nhé: `
-  }
-
-  const allFiles = items.every(i => !i.isPhoto)
-  if (allFiles) {
-    if (items.length === 1) {
-      return `Tôi vừa tải lên file \`${items[0].relativePath}\`. Bạn hãy đọc nội dung file này (dùng tool \`read\` hoặc tool đọc file phù hợp) và hỗ trợ tôi: `
-    }
-    const list = items.map(i => `- \`${i.relativePath}\``).join('\n')
-    return `Tôi vừa tải lên ${items.length} file sau:\n${list}\nBạn hãy đọc nội dung các file này (dùng tool \`read\` hoặc tool đọc file phù hợp) và hỗ trợ tôi: `
-  }
-
-  // Mixed items
-  const list = items.map(i => `- \`${i.relativePath}\` (${i.isPhoto ? 'ảnh' : 'file'})`).join('\n')
-  return `Tôi vừa tải lên các tệp sau:\n${list}\nBạn hãy đọc/xem nội dung các tệp này và hỗ trợ tôi: `
-}
-
 export async function checkModelVision(sessionId: string): Promise<VisionCheckResponse> {
   try {
     let provider = ''
@@ -267,22 +241,5 @@ export async function fetchUploadedFiles(
     }
   } catch (err: any) {
     return { ok: false, files: [], error: err?.message ?? 'Failed to list uploads' }
-  }
-}
-
-export function insertPromptIntoComposer(prompt: string): void {
-  const textarea = document.querySelector('textarea[data-input-target], textarea') as HTMLTextAreaElement | null
-  if (textarea) {
-    const current = textarea.value
-    const newText = current ? `${current}\n${prompt}` : prompt
-
-    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
-    if (nativeSetter) {
-      nativeSetter.call(textarea, newText)
-    } else {
-      textarea.value = newText
-    }
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    textarea.focus()
   }
 }
