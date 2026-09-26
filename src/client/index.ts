@@ -6,6 +6,7 @@ import { AttachButtons } from './composer/attach-buttons.js'
 import { ModelSeat } from './composer/model-seat.js'
 import { registerVisionCommands } from './commands.js'
 import { createVisionSource, type VisionSource } from './reference.js'
+import { VisionSection } from './settings/vision-section.js'
 
 export const name = 'dsh-upload-plugin-client'
 
@@ -114,5 +115,30 @@ export function apply(ctx: Context): void {
         }
       },
     }, ModelSeat))
+  })
+
+  // Task 10 — the plugin's own settings page, one toggle per model. `settings.section`
+  // is a root-scoped list, so the registration carries the nav identity (`id` keys the
+  // shell's `only` filter, `order` positions the row) and a `label` thunk, matching the
+  // shipped `models` entry (`ui-settings-models/src/client/index.ts:118`).
+  //
+  // The brief writes the element inline as JSX in a render callback; `index.ts` is a
+  // `.ts` file, which the TypeScript parser refuses to read as JSX (TS1005), so the
+  // component is handed to the registry and the wire face arrives through the `inject`
+  // face instead — Task 8's route, for Task 8's reason. Here the reason is sharper
+  // still: the section's `load` effect is keyed on its `api` prop, so a fresh element
+  // per render would re-read the settings document on every re-render. The face thunk
+  // may still run more than once, but it only ever hands over the connection's own
+  // stable `api`, which is the identity that effect actually depends on.
+  ctx.inject(['slots', 'connection'], (scoped: Context) => {
+    const slots = scoped.get('slots') as any
+    const connection = scoped.get('connection') as any
+    slots.inject('settings.section', () => slots.register({
+      name: 'settings.section',
+      id: 'vision',
+      order: 20,
+      label: () => 'Vision',
+      inject: () => ({ api: connection.api }),
+    }, VisionSection))
   })
 }
