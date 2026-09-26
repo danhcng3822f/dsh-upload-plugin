@@ -236,7 +236,7 @@ describe('activeTokens', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/attachments.spec.ts`
+Run: `pnpm exec vitest run tests/attachments.spec.ts`
 Expected: FAIL — `Failed to resolve import "../src/client/attachments.js"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -340,7 +340,7 @@ export function activeTokens(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm test -- tests/attachments.spec.ts`
+Run: `pnpm exec vitest run tests/attachments.spec.ts`
 Expected: PASS — 11 tests.
 
 - [ ] **Step 5: Commit**
@@ -397,7 +397,7 @@ describe('instructionFor', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/instruction.spec.ts`
+Run: `pnpm exec vitest run tests/instruction.spec.ts`
 Expected: FAIL — `Failed to resolve import "../src/client/instruction.js"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -423,7 +423,7 @@ export function instructionFor(record: AttachmentRecord): string {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm test -- tests/instruction.spec.ts`
+Run: `pnpm exec vitest run tests/instruction.spec.ts`
 Expected: PASS — 3 tests.
 
 - [ ] **Step 5: Commit**
@@ -524,7 +524,7 @@ describe('AttachmentStore', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/attachment-store.spec.ts`
+Run: `pnpm exec vitest run tests/attachment-store.spec.ts`
 Expected: FAIL — `Failed to resolve import "../src/client/attachment-store.js"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -671,7 +671,7 @@ export class AttachmentStore {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm test -- tests/attachment-store.spec.ts`
+Run: `pnpm exec vitest run tests/attachment-store.spec.ts`
 Expected: PASS — 6 tests.
 
 - [ ] **Step 5: Commit**
@@ -767,7 +767,7 @@ describe('createVisionSource', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/reference.spec.ts`
+Run: `pnpm exec vitest run tests/reference.spec.ts`
 Expected: FAIL — `Failed to resolve import "../src/client/reference.js"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -903,7 +903,7 @@ export function mintChip(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm test -- tests/reference.spec.ts`
+Run: `pnpm exec vitest run tests/reference.spec.ts`
 Expected: PASS — 7 tests.
 
 - [ ] **Step 5: Commit**
@@ -1226,7 +1226,7 @@ describe('effortChoices', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/effort.spec.ts`
+Run: `pnpm exec vitest run tests/effort.spec.ts`
 Expected: FAIL — `Failed to resolve import "../src/client/effort.js"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1293,7 +1293,7 @@ export function effortLabel(reasoning: ReasoningInfo | undefined, current: strin
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm test -- tests/effort.spec.ts`
+Run: `pnpm exec vitest run tests/effort.spec.ts`
 Expected: PASS — 7 tests.
 
 - [ ] **Step 5: Commit**
@@ -1606,7 +1606,7 @@ describe('setVision', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/vision-setting.spec.ts`
+Run: `pnpm exec vitest run tests/vision-setting.spec.ts`
 Expected: FAIL — `Failed to resolve import "../src/client/vision-setting.js"`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1658,7 +1658,7 @@ export function setVision(models: readonly ModelRow[], modelId: string, on: bool
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm test -- tests/vision-setting.spec.ts`
+Run: `pnpm exec vitest run tests/vision-setting.spec.ts`
 Expected: PASS — 7 tests.
 
 - [ ] **Step 5: Commit**
