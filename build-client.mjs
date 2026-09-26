@@ -23,6 +23,9 @@ try {
   ]
 }
 
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+const pluginId = pkg.name ?? 'dsh-upload-plugin'
+
 mkdirSync('lib', { recursive: true })
 await build({
   entryPoints: ['src/client/index.ts'],
@@ -31,7 +34,7 @@ await build({
   platform: 'browser',
   jsx: 'automatic',
   external: externals,
-  banner: { js: 'window.__ModuleLoader__.load({id:"dsh-vision-plugin",factory:function(require){var module={exports:{}};' },
+  banner: { js: `window.__ModuleLoader__.load({id:${JSON.stringify(pluginId)},factory:function(require){var module={exports:{}};` },
   footer: { js: 'return module.exports;}});' },
   outfile: 'lib/client.js',
   logLevel: 'info',

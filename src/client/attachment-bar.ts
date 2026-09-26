@@ -120,7 +120,7 @@ export function clearDraftAttachments(sessionId?: string): void {
  * Injects CSS matching DeepSeek Harness native InputBar and AttachmentRail design tokens
  */
 function ensureStylesInjected(): void {
-  const styleId = 'dsh-vision-plugin-styles'
+  const styleId = 'dsh-upload-plugin-styles'
   if (document.getElementById(styleId)) return
 
   const style = document.createElement('style')
