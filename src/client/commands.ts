@@ -5,6 +5,12 @@ import {
   openImageLightbox,
 } from './attachment-bar.js'
 import type { AttachmentRecord } from './attachments.js'
+import {
+  intakePhotos,
+  PHOTO_ACCEPT,
+  type DraftAdmission,
+  type NativeDraftImages,
+} from './intake.js'
 import { mintChip, nextChipCursor } from './reference.js'
 import {
   checkModelVision,
@@ -38,14 +44,47 @@ function sessionInput(ctx: Context, sessionId: string): any {
   return (ctx.get('conversation') as any)?.input?.for?.(actx)
 }
 
-/** Surface one notice on the session's composer, the way the attach buttons do. */
-function notifySession(ctx: Context, sessionId: string, text: string): void {
+/**
+ * Surface one notice on the session's composer, the way the attach buttons do.
+ *
+ * The level rides through verbatim: a refusal or a capability warning is `info`,
+ * a failure to act at all is `error` — the same split the harness's own composer
+ * uses (`InputBar.tsx:676-678` only colours `error` differently).
+ */
+function notifySession(
+  ctx: Context,
+  sessionId: string,
+  level: 'info' | 'error',
+  text: string
+): void {
   const facade = sessionInput(ctx, sessionId)
   if (typeof facade?.notify === 'function') {
-    facade.notify('error', text)
+    facade.notify(level, text)
     return
   }
-  console.warn(`[dsh-upload-plugin] error: ${text}`)
+  console.warn(`[dsh-upload-plugin] ${level}: ${text}`)
+}
+
+/**
+ * The session's live draft admission, or undefined when this plugin cannot write
+ * to it at all: the session is not scoped right now, or the facade carries no
+ * admission verb — the same conditions `mintChip` refuses on.
+ *
+ * `SessionInput` (`ui-conversation/src/client/input/contract.ts:33-59`) is where
+ * both halves come from: `addImages` (`:37`) is the admission, `state` (`:58`) is
+ * the published draft whose `imageIds` the pre-check reads as its `current`. The
+ * facade is resolved exactly as `notifySession` resolves it, so the two notice and
+ * admission channels can never point at different sessions.
+ */
+function draftAdmission(ctx: Context, sessionId: string): DraftAdmission | undefined {
+  const facade = sessionInput(ctx, sessionId)
+  if (typeof facade?.addImages !== 'function') return undefined
+  const state = facade.state?.getSnapshot?.()
+  if (state === undefined || state === null) return undefined
+  return {
+    imageIds: state.imageIds,
+    addImages: ids => facade.addImages(ids),
+  }
 }
 
 /**
@@ -61,7 +100,7 @@ async function attachFiles(
 ): Promise<void> {
   const store = attachmentStore()
   if (store === undefined) {
-    notifySession(ctx, sessionId, 'Kho tệp đính kèm chưa sẵn sàng')
+    notifySession(ctx, sessionId, 'error', 'Kho tệp đính kèm chưa sẵn sàng')
     return
   }
 
@@ -69,7 +108,7 @@ async function attachFiles(
   // Pre-flight only: it keeps an unusable session from uploading anything.
   const ready = sessionInput(ctx, sessionId)?.state?.getSnapshot?.()
   if (ready === undefined || ready === null) {
-    notifySession(ctx, sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
+    notifySession(ctx, sessionId, 'error', 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
     return
   }
 
@@ -81,7 +120,7 @@ async function attachFiles(
   // below is synchronous, so this read is the only freshness the CAS needs.
   const live = sessionInput(ctx, sessionId)?.state?.getSnapshot?.()
   if (live === undefined || live === null) {
-    notifySession(ctx, sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
+    notifySession(ctx, sessionId, 'error', 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
     return
   }
 
@@ -94,7 +133,7 @@ async function attachFiles(
     const response = responses[i]
     const name = response.filename ?? files[i].name
     if (!response.ok || response.relativePath === undefined) {
-      notifySession(ctx, sessionId, `Không tải được ${name}`)
+      notifySession(ctx, sessionId, 'error', `Không tải được ${name}`)
       continue
     }
 
@@ -110,7 +149,7 @@ async function attachFiles(
     store.add(sessionId, record)
 
     if (!mintChip(sessions, sessionId, cursor, record)) {
-      notifySession(ctx, sessionId, `Không chèn được tham chiếu cho ${token}`)
+      notifySession(ctx, sessionId, 'error', `Không chèn được tham chiếu cho ${token}`)
       continue
     }
     cursor = nextChipCursor(cursor)
@@ -123,45 +162,54 @@ export function registerVisionCommands(ctx: Context): void {
     return
   }
 
-  // 1. Add photos command (supports multiple photos)
+  // 1. Add photos command (supports multiple photos).
+  //
+  // The same code path as the composer's 📷 button, deliberately: a photo is
+  // admitted as a **native draft image**, so the model receives the image itself
+  // and nothing is spliced into the text of the user's own message. The sequence
+  // is `intakePhotos` (`./intake.js`), shared with the button, so the two entry
+  // points cannot drift.
   commandUi.register({
     name: 'photos',
-    description: 'Add photos (Upload một hoặc nhiều ảnh vào workspace và gọi tool read_image)',
+    description: 'Add photos (Thêm một hoặc nhiều ảnh vào bản nháp để model xem trực tiếp)',
     available: () => true,
     ui: {
       kind: 'popupSelect',
-      options: async (session: any) => {
-        const vision = await checkModelVision(session.sessionId)
-        if (!vision.hasVision) {
-          return [
-            {
-              id: 'unsupported',
-              label: `❌ Model ${vision.model ?? ''} chưa bật tính năng xem ảnh`,
-              detail: vision.reason ?? 'Cần thêm input: [text, image] trong cấu hình model',
-            },
-          ]
-        }
-        return [
-          {
-            id: 'pick-photo',
-            label: `📷 Chọn một hoặc nhiều ảnh (${vision.model ?? 'Vision'})`,
-            detail: 'Hỗ trợ chọn nhiều ảnh cùng lúc (.png, .jpg, .webp, .gif) -> uploads/',
-          },
-        ]
-      },
-      onSelect: async (option: any, session: any) => {
-        if (option.id === 'unsupported') {
-          return
-        }
-
-        const files = await pickFilesFromBrowser('image/png,image/jpeg,image/webp,image/gif', true)
+      options: async () => [
+        {
+          id: 'pick-photo',
+          label: '📷 Chọn một hoặc nhiều ảnh',
+          detail: 'Hỗ trợ chọn nhiều ảnh cùng lúc (.png, .jpg, .webp, .gif)',
+        },
+      ],
+      onSelect: async (_option: any, session: any) => {
+        const sessionId = session.sessionId
+        // Started before the picker resolves: the dialog is slower than this
+        // request by orders of magnitude, so the capability warning costs the user
+        // no extra wait. The 📷 button orders the two the same way.
+        const vision = checkModelVision(sessionId)
+        const files = await pickFilesFromBrowser(PHOTO_ACCEPT, true)
         if (files.length === 0) return
 
-        try {
-          await attachFiles(ctx, session.sessionId, files, true)
-        } catch (err: any) {
-          notifySession(ctx, session.sessionId, `Lỗi upload ảnh: ${err?.message ?? err}`)
-        }
+        intakePhotos({
+          files,
+          faces: {
+            // The service the button is handed as a prop, reached the way this
+            // file already reaches `sessions` and `conversation.input`.
+            conversation: ctx.get('conversation') as NativeDraftImages | undefined,
+            draft: draftAdmission(ctx, sessionId),
+          },
+          // No limits are passed on purpose. `imageLimits` arrives through
+          // `useProjection`, a hook that exists only inside a slot component
+          // (`web-react/src/session-provider.tsx:96-114`), and a command is not one.
+          // Absent limits are capability absence, not a zero limit: the admission
+          // then defers to the host's submit-time enforcement, which is the
+          // posture the composer documents for callers that bypass it
+          // (`InputBar.tsx:437-439`).
+          limits: undefined,
+          vision,
+          notify: (level, text) => { notifySession(ctx, sessionId, level, text) },
+        })
       },
     },
   })
@@ -187,7 +235,7 @@ export function registerVisionCommands(ctx: Context): void {
         try {
           await attachFiles(ctx, session.sessionId, files, false)
         } catch (err: any) {
-          notifySession(ctx, session.sessionId, `Lỗi upload file: ${err?.message ?? err}`)
+          notifySession(ctx, session.sessionId, 'error', `Lỗi upload file: ${err?.message ?? err}`)
         }
       },
     },
@@ -244,7 +292,7 @@ export function registerVisionCommands(ctx: Context): void {
             {
               id: 'empty',
               label: '📂 Chưa có file hoặc ảnh nào được tải lên trong session này',
-              detail: 'Dùng /photos hoặc /files để tải tệp vào session này',
+              detail: 'Dùng /files để tải tệp vào session này',
             },
           ]
         }
@@ -266,12 +314,12 @@ export function registerVisionCommands(ctx: Context): void {
 
         const store = attachmentStore()
         if (store === undefined) {
-          notifySession(ctx, session.sessionId, 'Kho tệp đính kèm chưa sẵn sàng')
+          notifySession(ctx, session.sessionId, 'error', 'Kho tệp đính kèm chưa sẵn sàng')
           return
         }
         const state = sessionInput(ctx, session.sessionId)?.state?.getSnapshot?.()
         if (state === undefined || state === null) {
-          notifySession(ctx, session.sessionId, 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
+          notifySession(ctx, session.sessionId, 'error', 'Phiên hiện tại chưa sẵn sàng để chèn tham chiếu')
           return
         }
 
@@ -291,7 +339,7 @@ export function registerVisionCommands(ctx: Context): void {
         if (item.record === undefined) store.add(session.sessionId, record)
 
         if (!mintChip(ctx.get('sessions') as any, session.sessionId, state, record)) {
-          notifySession(ctx, session.sessionId, `Không chèn được tham chiếu cho ${token}`)
+          notifySession(ctx, session.sessionId, 'error', `Không chèn được tham chiếu cho ${token}`)
         }
       },
     },

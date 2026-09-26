@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest'
-import { checkImageIntake, intakeRefusalText, type ImageLimits } from '../src/client/intake.js'
+import { describe, it, expect, vi } from 'vitest'
+import type { ComposerAttachment, DraftAttachmentId } from '@deepseek-ai/dsh-client-ui-conversation'
+import {
+  checkImageIntake,
+  intakePhotos,
+  intakeRefusalText,
+  PHOTO_ACCEPT,
+  type DraftAdmission,
+  type ImageLimits,
+  type NativeDraftImages,
+} from '../src/client/intake.js'
+import type { VisionCheckResponse } from '../src/types.js'
 
 const LIMITS: ImageLimits = {
   mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
@@ -8,8 +18,12 @@ const LIMITS: ImageLimits = {
   maxMessageImageBytes: 200,
 }
 
-/** A file as the checks read it: only the declared type and the byte count. */
-const file = (type: string, size: number) => ({ type, size })
+/**
+ * A file as every check reads it: only the declared type and the byte count. The
+ * cast is the whole of what the sequence needs — it hands the object straight to
+ * `createDraftImages` without touching it.
+ */
+const file = (type: string, size: number): File => ({ type, size }) as unknown as File
 const png = (size = 10) => file('image/png', size)
 
 describe('checkImageIntake', () => {
@@ -95,5 +109,332 @@ describe('intakeRefusalText', () => {
   it('distinguishes the per-image limit from the message total', () => {
     expect(intakeRefusalText({ reason: 'fileTooLarge', limit: 1024 }))
       .not.toBe(intakeRefusalText({ reason: 'totalTooLarge', limit: 1024 }))
+  })
+})
+
+describe('PHOTO_ACCEPT', () => {
+  it('offers exactly the media types the deployment publishes', () => {
+    // The picker's filter and the pre-check's first rule read the same four types,
+    // so the dialog cannot offer a file the intake would then refuse.
+    expect(PHOTO_ACCEPT.split(',')).toEqual(LIMITS.mediaTypes)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The admit sequence. Everything below drives `intakePhotos` through fakes: the
+// same function the 📷 button and the `/photos` command call, so these cases pin
+// both entry points at once.
+// ---------------------------------------------------------------------------
+
+/** One registered draft image, as `createDraftImages` returns it. */
+const draftImage = (id: string, source: File): ComposerAttachment => ({
+  kind: 'image',
+  id: id as DraftAttachmentId,
+  file: source,
+  previewUrl: `blob:${id}`,
+})
+
+const draftId = (value: string) => value as DraftAttachmentId
+
+/** A stand-in conversation service that records every call the sequence makes. */
+function conversationFake(options: {
+  /** The draft's live descriptors `draftImages` resolves to. */
+  draft?: readonly ComposerAttachment[]
+  /** What `createDraftImages` throws instead of registering anything. */
+  throws?: Error
+} = {}) {
+  const calls = {
+    draftImages: [] as (readonly DraftAttachmentId[])[],
+    createDraftImages: [] as (readonly File[])[],
+    releaseDraftImages: [] as (readonly ComposerAttachment[])[],
+  }
+  const service: NativeDraftImages = {
+    draftImages: (ids) => { calls.draftImages.push(ids); return options.draft ?? [] },
+    createDraftImages: (files) => {
+      calls.createDraftImages.push(files)
+      if (options.throws !== undefined) throw options.throws
+      return files.map((source, index) => draftImage(`draft-${index}`, source))
+    },
+    releaseDraftImages: (attachments) => { calls.releaseDraftImages.push(attachments) },
+  }
+  return { service, calls }
+}
+
+/** A stand-in draft admission that records what it was asked to append. */
+function draftFake(options: { imageIds?: readonly DraftAttachmentId[]; admits?: boolean } = {}) {
+  const appended: (readonly DraftAttachmentId[])[] = []
+  const draft: DraftAdmission = {
+    imageIds: options.imageIds ?? [],
+    addImages: (ids) => { appended.push(ids); return options.admits ?? true },
+  }
+  return { draft, appended }
+}
+
+/** A notice channel that keeps what it was told, and in what order. */
+function noticeChannel() {
+  const seen: { level: string; text: string }[] = []
+  const notify = (level: 'info' | 'error', text: string): void => { seen.push({ level, text }) }
+  return { seen, notify }
+}
+
+/** A capability check, resolved as `checkModelVision` answers it. */
+const vision = (check: Partial<VisionCheckResponse> = {}): Promise<VisionCheckResponse> =>
+  Promise.resolve({ hasVision: true, ...check })
+
+/** Let the capability check's own `then` run: it is a microtask, not a tick. */
+const settled = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve() }
+
+describe('intakePhotos', () => {
+  it('registers the batch and admits exactly the ids it minted, in order', () => {
+    const { service, calls } = conversationFake()
+    const { draft, appended } = draftFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png(), png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(calls.createDraftImages).toHaveLength(1)
+    expect(appended).toEqual([[draftId('draft-0'), draftId('draft-1')]])
+    expect(calls.releaseDraftImages).toEqual([])
+    expect(notices.seen).toEqual([])
+  })
+
+  it('checks the batch against the draft as the click found it, not against the pick alone', () => {
+    // Two images already in the draft plus two picked break the three-image limit:
+    // only a projection over the whole message can refuse this.
+    const live = [draftImage('live-1', png()), draftImage('live-2', png())]
+    const { service, calls } = conversationFake({ draft: live })
+    const { draft, appended } = draftFake({ imageIds: [draftId('live-1'), draftId('live-2')] })
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png(), png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(calls.draftImages).toEqual([[draftId('live-1'), draftId('live-2')]])
+    expect(notices.seen).toEqual([
+      { level: 'info', text: intakeRefusalText({ reason: 'tooMany', limit: 3 }) },
+    ])
+    // Refused as a whole, before anything was registered.
+    expect(calls.createDraftImages).toEqual([])
+    expect(appended).toEqual([])
+  })
+
+  it('admits with no limits at all, deferring to the host', () => {
+    // The `/photos` command has no projection seat and passes none: a batch that
+    // would break every limit still goes through, and the host enforces at submit.
+    const { service, calls } = conversationFake()
+    const { draft, appended } = draftFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [file('image/bmp', 10_000_000)],
+      faces: { conversation: service, draft },
+      limits: undefined,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(calls.createDraftImages).toHaveLength(1)
+    expect(appended).toHaveLength(1)
+    expect(notices.seen).toEqual([])
+  })
+
+  it('turns the service\'s own MIME refusal into the format refusal', () => {
+    const thrown = new Error('unsupported image media type: image/bmp')
+    thrown.name = 'UnsupportedImageMediaTypeError'
+    const { service } = conversationFake({ throws: thrown })
+    const { draft, appended } = draftFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [file('image/bmp', 10)],
+      faces: { conversation: service, draft },
+      limits: undefined,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(notices.seen).toEqual([
+      { level: 'info', text: intakeRefusalText({ reason: 'unsupportedType' }) },
+    ])
+    expect(appended).toEqual([])
+  })
+
+  it('reports any other registration failure verbatim', () => {
+    const { service } = conversationFake({ throws: new Error('out of memory') })
+    const { draft } = draftFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(notices.seen).toEqual([{ level: 'info', text: 'Không thêm được ảnh: out of memory' }])
+  })
+
+  it('releases the batch when the admission transaction refuses it', () => {
+    const { service, calls } = conversationFake()
+    const { draft, appended } = draftFake({ admits: false })
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(appended).toHaveLength(1)
+    // The descriptors were registered and then refused: they are released again,
+    // exactly as the composer's own intake wrapper releases them.
+    expect(calls.releaseDraftImages.map(released => released.map(image => image.id)))
+      .toEqual([[draftId('draft-0')]])
+    expect(notices.seen).toEqual([
+      { level: 'info', text: 'Chưa thêm được ảnh: hãy thử lại sau khi tin nhắn hiện tại gửi xong' },
+    ])
+  })
+
+  it('announces the missing conversation service instead of admitting', () => {
+    const { draft, appended } = draftFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: undefined, draft },
+      limits: LIMITS,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(notices.seen).toEqual([
+      { level: 'error', text: 'Dịch vụ hội thoại chưa sẵn sàng để thêm ảnh' },
+    ])
+    expect(appended).toEqual([])
+  })
+
+  it('announces an unavailable session instead of admitting', () => {
+    const { service, calls } = conversationFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: service, draft: undefined },
+      limits: LIMITS,
+      vision: vision(),
+      notify: notices.notify,
+    })
+
+    expect(notices.seen).toEqual([
+      { level: 'error', text: 'Phiên hiện tại chưa sẵn sàng để thêm ảnh' },
+    ])
+    expect(calls.createDraftImages).toEqual([])
+  })
+
+  it('admits first and warns after, when the model cannot see images', async () => {
+    const order: string[] = []
+    const { service } = conversationFake()
+    const draft: DraftAdmission = {
+      imageIds: [],
+      addImages: () => { order.push('admit'); return true },
+    }
+    const seen: { level: string; text: string }[] = []
+    const notify = (level: 'info' | 'error', text: string): void => {
+      order.push('notify')
+      seen.push({ level, text })
+    }
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision({ hasVision: false, model: 'text-only', reason: 'thiếu input: [text, image]' }),
+      notify,
+    })
+
+    // The admission is synchronous and never waits on the check; the warning is a
+    // microtask behind it, so the user's photo is never held back by the network.
+    expect(order).toEqual(['admit'])
+    await settled()
+    expect(order).toEqual(['admit', 'notify'])
+    expect(seen).toEqual([
+      { level: 'info', text: '⚠️ Model text-only chưa bật tính năng xem ảnh — thiếu input: [text, image]' },
+    ])
+  })
+
+  it('says nothing when the model can see images', async () => {
+    const { service } = conversationFake()
+    const { draft } = draftFake()
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision({ hasVision: true, model: 'vision-model' }),
+      notify: notices.notify,
+    })
+
+    await settled()
+    expect(notices.seen).toEqual([])
+  })
+
+  it('warns nothing when the batch never landed', async () => {
+    const { service } = conversationFake()
+    const { draft } = draftFake({ admits: false })
+    const notices = noticeChannel()
+
+    intakePhotos({
+      files: [png()],
+      faces: { conversation: service, draft },
+      limits: LIMITS,
+      vision: vision({ hasVision: false, model: 'text-only' }),
+      notify: notices.notify,
+    })
+
+    await settled()
+    // One notice only, and it is the refusal: a batch that never landed raises no
+    // capability warning.
+    expect(notices.seen).toEqual([
+      { level: 'info', text: 'Chưa thêm được ảnh: hãy thử lại sau khi tin nhắn hiện tại gửi xong' },
+    ])
+  })
+
+  it('swallows a capability-check rejection into the console', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { service } = conversationFake()
+      const { draft, appended } = draftFake()
+      const notices = noticeChannel()
+
+      intakePhotos({
+        files: [png()],
+        faces: { conversation: service, draft },
+        limits: LIMITS,
+        vision: Promise.reject(new Error('offline')),
+        notify: notices.notify,
+      })
+
+      await settled()
+      expect(appended).toHaveLength(1)
+      expect(notices.seen).toEqual([])
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
