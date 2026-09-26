@@ -4,10 +4,12 @@
  *
  * `conversation.input.model` is a `single` slot: taking it means rendering the
  * whole model affordance, so this component re-implements the shipped selector's
- * observable behaviour (provider-grouped list, loading/error/retry, locked,
- * subagent exclusion, notice on rejection) and adds the effort half.
+ * observable behaviour (provider-grouped list, loading / whole-request error /
+ * per-provider failure states with a retry, locked, subagent exclusion, a
+ * transient toast on rejection) and adds the effort half.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import { effortChoices, effortLabel, type ReasoningInfo } from '../effort.js'
 
 export interface ModelSeatProps {
@@ -18,6 +20,7 @@ export interface ModelSeatProps {
     getSnapshot(): {
       current: { provider: string; model: string; reasoningEffort?: string } | null
       groups: readonly { id: string; name: string; models: readonly { id: string; name: string; description?: string; reasoning?: ReasoningInfo }[] }[]
+      failures: readonly { id: string; name: string; message: string }[]
       status: 'idle' | 'loading' | 'ready' | 'selecting' | 'error'
       error: string | null
     }
@@ -48,6 +51,8 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
   const [open, setOpen] = useState<'none' | 'model' | 'effort'>('none')
   const [customOpen, setCustomOpen] = useState(false)
   const [customValue, setCustomValue] = useState('')
+  const [toast, setToast] = useState<{ seq: number; text: string } | null>(null)
+  const toastSeq = useRef(0)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => directory.subscribe(() => { setSnapshot(directory.getSnapshot()) }), [directory])
@@ -81,11 +86,26 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
 
   if (!available) return null
 
+  /**
+   * A rejected selection: announce it, and keep the diagnostic channel.
+   *
+   * The Host's own text is read from the directory at settle time, not from this
+   * render's snapshot: `select()` clears `error` when it starts and writes the
+   * failure through the store, so a snapshot captured when the click's render ran
+   * still holds the pre-click value and would lose the message to the fallback.
+   * @param accepted - whether the directory took the selection.
+   */
+  const settle = (accepted: boolean): void => {
+    if (accepted) { setOpen('none'); setCustomOpen(false); return }
+    const message = directory.getSnapshot().error ?? 'Không đổi được model'
+    onError(message)
+    // A fresh seq per show: the Toast restarts its own cycle by being remounted.
+    toastSeq.current += 1
+    setToast({ seq: toastSeq.current, text: message })
+  }
+
   const submit = (selection: { provider: string; model: string; reasoningEffort?: string }): void => {
-    void select(selection).then(accepted => {
-      if (accepted) { setOpen('none'); setCustomOpen(false); return }
-      onError(snapshot.error ?? 'Không đổi được model')
-    })
+    void select(selection).then(settle)
   }
 
   const chooseEffort = (effort: string | undefined): void => {
@@ -120,9 +140,21 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
       {open === 'model' && (
         <div role="menu">
           {snapshot.status === 'loading' && <div>Đang tải…</div>}
-          {snapshot.error !== null && (
+          {/* One strip for both failure kinds: the whole-request error, and the
+              per-provider failures a partly successful load leaves behind. A
+              failed provider keeps `error` null (the directory writes `failures`
+              and clears `error` in the same update) and is simply absent from
+              `groups`, so without this row it would be a dead end — no strip, no
+              retry, and no sign of why the provider is missing. */}
+          {(snapshot.error !== null || snapshot.failures.length > 0) && (
             <div>
-              <span>{snapshot.error}</span>
+              {snapshot.error !== null && <span>{snapshot.error}</span>}
+              {snapshot.failures.map(failure => (
+                <div key={failure.id}>
+                  <span>{failure.name}</span>
+                  <span>{failure.message}</span>
+                </div>
+              ))}
               <button type="button" onClick={load}>Thử lại</button>
             </div>
           )}
@@ -190,6 +222,18 @@ export function ModelSeat({ locked, available, directory, load, select, onError 
             </form>
           )}
         </div>
+      )}
+
+      {/* Portaled to the body by the primitive itself, anchored to the composer
+          card so the banner centres over the chat column. The seq key remounts it
+          so a repeated rejection restarts the cycle instead of being swallowed. */}
+      {toast !== null && (
+        <Toast
+          key={toast.seq}
+          text={toast.text}
+          anchor={rootRef.current?.closest<HTMLElement>('[data-composer-card]') ?? null}
+          onDone={() => { setToast(null) }}
+        />
       )}
     </div>
   )
