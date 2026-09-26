@@ -1103,7 +1103,17 @@ git commit -m "feat: attach buttons in the composer tool row"
 - Consumes: `mintChip` (Task 4), `AttachmentStore` (Task 3).
 - Produces: nothing new; the plugin no longer writes instruction text into the draft.
 
-- [ ] **Step 1: Delete the composer-text helpers**
+- [ ] **Step 1: Drive the rail from the live draft (spec §4.3.1 rule 2)**
+
+`activeTokens` (Task 1) has no caller yet. Wire it: `renderAttachmentBar` must render the attachments whose chip is in the draft **right now**, so a sent message empties the rail by itself.
+
+- In `src/client/attachment-bar.ts`, replace the `sessionDraftMap` source of truth with `activeTokens(input.occurrences, store.list(sessionId))`, resolved through `store.byRef(ref)` to the record each chip points at.
+- The component needs the live `InputZone` share; where the rail is rendered outside a slot (the current `setInterval` session watcher), pass the last-known `occurrences` in and re-render from the watcher.
+- Remove `addDraftAttachments` from the attach path (Task 5 already does not call it) and delete it if nothing else uses it.
+
+Expected behaviour after this step: sending a message clears the rail without a reload; removing a chip from the draft removes its card.
+
+- [ ] **Step 2: Delete the composer-text helpers**
 
 In `src/client/uploader.ts` remove `generateDraftPrompt` and `insertPromptIntoComposer` entirely.
 
@@ -1113,24 +1123,24 @@ In `src/client/commands.ts`:
 - `/photos` and `/files` call the same attach path as the buttons.
 - `/uploads` re-reference mints a chip via `mintChip` instead of calling `insertPromptIntoComposer`.
 
-- [ ] **Step 2: Update the affected test**
+- [ ] **Step 3: Update the affected test**
 
 `tests/client-uploader.spec.ts` currently imports `generateDraftPrompt`. Delete those cases and keep the `formatFileSize` case; move nothing else.
 
-- [ ] **Step 3: Run the suite**
+- [ ] **Step 4: Run the suite**
 
 Run: `pnpm test`
 Expected: PASS — the remaining specs, with no import of a deleted symbol.
 
-- [ ] **Step 4: Build**
+- [ ] **Step 5: Build**
 
 Run: `pnpm run build`
 Expected: `tsc` clean.
 
-- [ ] **Step 5: Manual check — the one-shot guarantee**
+- [ ] **Step 6: Manual check — the one-shot guarantee**
 
 1. Attach a photo, send the message. The sent message contains the instruction.
-2. Immediately send a second message with no attachment. **It must contain no instruction.**
+2. Immediately send a second message with no attachment. **It must contain no instruction**, and the rail must be empty.
 3. Attach the same photo again; a new chip appears and the instruction is injected again.
 
 - [ ] **Step 6: Commit**
@@ -1847,7 +1857,9 @@ git commit -m "docs: document composer attach, effort and vision controls"
 
 ## Notes for the executor
 
-- Phase 0 is a hard gate. Do not start Phase 1 before its decision is recorded.
+- **Phase 0 is already satisfied and Task 0 is not dispatched.** The chip-minting chain was verified against the harness source (see the SDD ledger's ruling R2): `machine.ts:259 casOk` accepts a zero-width span at the end of the draft when `draftRev` matches, `machine.ts:279 onInsertRef` does not reject `start === end`, `facade.ts:298` reports success as a `draftRev` advance, and `hub.ts:88` is the listener. The residual runtime risk is covered by Task 5's manual check; the fallback there is the `+`-menu pick path.
+- **`src/client/index.ts` is append-only across Tasks 5, 8 and 10.** Each of those tasks adds one registration block to the existing `apply()`. Read the current file first and add to it — never replace it, or a sibling task's registration disappears silently. Task 11's end-to-end checklist is what catches that.
 - Tasks 1–4 and 7 and 9 are pure-logic tasks: they must be TDD'd exactly as written, since they are the only part of this work that vitest can reach (the suite runs in `node` with no DOM).
 - Tasks 5, 8 and 10 are React components. Their verification is the manual check in their last step; do not invent DOM tests — the harness has no jsdom dependency and adding one is out of scope.
 - If `tsc` reports an unused import after a refactor, remove it rather than suppressing the error.
+- `mintChip` returns `true` only when the machine really minted the occurrence. Treat `false` as a real failure to surface, never as a silent no-op.
