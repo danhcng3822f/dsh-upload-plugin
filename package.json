@@ -1,20 +1,27 @@
 {
   "name": "dsh-upload-plugin",
   "version": "0.1.0",
-  "description": "DeepSeek Harness plugin providing Add photos, Add files, and Uploaded files in chat UI with vision validation and session isolation",
+  "description": "DeepSeek Harness plugin that attaches photos and files from the chat composer: photos reach the model as native image content, files through a Context injection block, so your own message text stays yours",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/danhcng3822f/dsh-upload-plugin.git"
   },
+  "homepage": "https://github.com/danhcng3822f/dsh-upload-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/danhcng3822f/dsh-upload-plugin/issues"
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",
     "plugin",
+    "cordis",
     "vision",
     "upload",
+    "attachment",
     "files",
-    "cordis"
+    "images",
+    "reasoning-effort"
   ],
   "type": "module",
   "main": "lib/index.js",

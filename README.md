@@ -1,97 +1,106 @@
-# DSH Upload Plugin (`dsh-upload-plugin`)
+# dsh-upload-plugin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Plugin mở rộng cho **DeepSeek Harness (DSH)**, bổ sung tính năng **Add photos**, **Add files** và **Uploaded files** trực tiếp trong menu dấu cộng (`+`) trên thanh chat, hỗ trợ các model từ Custom Provider xem ảnh (Vision) và đọc tài liệu/tệp tin theo từng session một cách chuyên nghiệp.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that attaches photos and files from the chat composer.
+
+**Photos reach the model as real image content. Files reach it through a Context injection block.** Your own message text stays yours — nothing is pasted into your draft, and no instruction is spliced into what you send.
 
 ---
 
-## 🌟 Tính năng nổi bật
+## Why this exists
 
-1. **Menu Dấu cộng (`+`) trên Chat UI**:
-   - **📷 Add photos (`/photos`)**: Cho phép chọn **một hoặc nhiều ảnh cùng lúc** (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`). Ảnh được đưa vào bản nháp dưới dạng **ảnh gốc (native draft image)** — model nhận **chính tấm ảnh**, không phải một câu chỉ dẫn. Không có chữ nào được dán vào ô nhập.
-   - **📄 Add files (`/files`)**: Cho phép chọn **một hoặc nhiều tệp/tài liệu cùng lúc** (`.txt`, `.pdf`, `.json`, `.csv`, code, zip...), tải lên workspace và chèn một **chip tham chiếu** vào bản nháp. Chỉ dẫn đọc file được gửi tới model dưới dạng **Context injection** (xem mục 7).
-   - **📂 Uploaded files (`/uploads`)**: Xem lại toàn bộ danh sách các tệp tin/hình ảnh đã tải lên trong phiên chat hiện tại và bấm để xem lại hoặc phân tích lại.
+A model can only read what it is given. Out of the box, the DSH composer has no attach affordance, and the obvious workaround — write the file's path into your message and ask the model to go read it — has three failure points and pollutes your own text.
 
-2. **Giao diện đính kèm chuẩn DeepSeek Chat (Native Composer Rail)**:
-   - Thẻ đính kèm hiển thị trực tiếp **bên trong khung chat capsule**, đồng bộ hoàn toàn với font chữ, màu sắc, viền và bóng đổ ở cả **Light Mode** và **Dark Mode**.
-   - **Thẻ file**: Chiều cao 64px, bo góc 16px, có huy hiệu đuôi file (`TXT`, `PDF`, `PY`...) nổi bật cùng tên và dung lượng file. Đây là nội dung chính của rail, vì rail vẽ đúng những **chip tham chiếu** đang có trong bản nháp.
-   - **Ảnh** không đi qua rail này nữa: ảnh là **ảnh native của Harness**, do chính composer của DSH hiển thị. Rail của plugin chỉ còn vẽ thẻ ảnh cho những bản ghi ảnh cũ (tạo trước khi ảnh chuyển sang native) nếu bản nháp còn chip trỏ tới chúng.
-   - Nút gỡ bỏ (`✕`) tinh tế, tự động hiện mượt mà khi rê chuột (`hover`).
+This plugin adds the affordance, and picks the shortest correct route for each kind of attachment:
 
-3. **Phân tách file độc lập theo từng Session (Session Isolation)**:
-   - Tệp tải lên nằm trong `uploads/<sessionId>/` và được đặt tên kèm thẻ session rút gọn (`session_{tag}__<ten_file>`), nên tệp của phiên này không lẫn sang phiên khác.
-   - Menu `/uploads` của từng session chỉ hiển thị các tệp thuộc phiên đó.
+| Attachment | How the model gets it | Instruction needed? |
+|---|---|---|
+| **Photo** | Native draft image — the image bytes ride in the message content | **No.** The model sees the picture. |
+| **File** | A reference chip in your draft; a Context injection block carries the read instruction | Yes, as a separate block |
 
-4. **Ảnh đi nguyên bản, giới hạn do Harness quyết định**:
-   - Ảnh **không còn được nén lại** trên đường đính kèm. Từ khi ảnh đi theo dạng native draft image, giới hạn (định dạng, số ảnh mỗi tin nhắn, dung lượng từng ảnh, tổng dung lượng) là do **deployment của Harness công bố** và plugin kiểm tra đúng theo đó — chứ không tự đặt ra một ngưỡng riêng.
-   - Hàm nén ảnh (`optimizeImageIfNeeded`) vẫn còn trong `src/client/uploader.ts` nhưng **hiện không còn đường nào gọi tới nó**: cả hai lối đính kèm ảnh đều dùng intake native. Nó chỉ chạy khi `uploadMultipleFiles` được gọi với `isPhoto = true`, và không call site nào còn làm vậy.
-
-5. **Kiểm tra tính năng Vision của Model**:
-   - Cả **`/photos`** lẫn nút **`[📷]`** đều chạy **cùng một quy trình** (`intakePhotos`), nên hai lối vào không thể lệch nhau.
-   - **Không chặn trước.** Batch ảnh được kiểm tra theo đúng giới hạn của deployment (định dạng, số lượng, dung lượng từng ảnh, tổng dung lượng) rồi mới được nhận. Nếu model đang dùng **không khai báo** đọc được ảnh, plugin vẫn nhận ảnh và chỉ **cảnh báo** — vì ảnh giờ đi như nội dung ảnh thật, provider sẽ từ chối lượt đó thay vì lặng lẽ bỏ qua một câu chỉ dẫn.
-   - Việc model có đọc được ảnh hay không là do **khai báo** của bạn ở **Settings → Vision** — trang đó chỉ nói lên khai báo, không dò khả năng thật của upstream.
-
-6. **Hai nút đính kèm ngay trên thanh công cụ composer**:
-   - `[📷]` (Thêm ảnh) và `[📄]` (Thêm tệp) nằm trực tiếp trong thanh công cụ của khung nhập liệu, bên trái nút chọn model — dùng được ngay mà không cần mở menu dấu cộng.
-   - `[📷]` đưa ảnh vào dưới dạng **ảnh native của Harness**; `[📄]` **tạo một chip tham chiếu** trong bản nháp.
-   - Cả hai đều **không dán câu chỉ dẫn nào vào ô nhập**. Nội dung ô nhập của bạn vẫn nguyên vẹn — ngoại trừ chip tham chiếu (file) và một ký tự zero-width ẩn đi kèm nó.
-
-7. **Chỉ dẫn đọc tệp đi bằng Context injection, không nằm trong tin nhắn của bạn**:
-   - Câu chỉ dẫn ("hãy gọi tool `read_image`…" / "hãy đọc nội dung file này…") **không còn được ghép vào chữ của tin nhắn bạn gửi**. Nó tới model dưới dạng một dòng **Context injection** riêng — đúng cách DeepSeek Harness tự chèn ngữ cảnh của nó.
-   - **Ảnh không cần chỉ dẫn nào cả**: ảnh đi như nội dung ảnh thật, nên model nhìn thấy chính tấm ảnh. Chỉ **file** mới cần câu chỉ dẫn, vì Harness không có loại nội dung `file` để gửi kèm.
-   - **Đúng một lần cho mỗi lần gửi.** Tập đính kèm đang sống trong bản nháp được gửi tới Host và được "tiêu" khi lượt kế tiếp bắt đầu; **tin nhắn sau đó không mang theo chỉ dẫn nào**, trừ khi bạn đính kèm lại. Plugin không có hàng đợi chờ nào cả.
-   - Ô nhập của bạn vẫn chỉ chứa **chip tham chiếu** — kèm một ký tự zero-width ẩn, cần thiết để Harness không coi tin nhắn chỉ-có-file là rỗng rồi âm thầm không gửi gì cả.
-
-8. **Thanh đính kèm (rail) bám theo bản nháp đang sống**:
-   - Rail hiển thị đúng những tệp mà bản nháp hiện tại đang tham chiếu, nên gửi xong rail tự trống.
-   - Bấm `✕` để gỡ một đính kèm: chỉ chip tương ứng bị xoá khỏi bản nháp, **phần chữ bạn đã gõ được giữ nguyên**.
-
-9. **Nút reasoning effort**:
-   - Nút effort nằm trong tool row của composer, **bên trái nút chọn model**. Nút chọn model vẫn là của DeepSeek Harness — plugin không chiếm ghế đó.
-   - Danh sách effort lấy từ **chính model khai báo trên Host** (`reasoning.efforts`), cộng thêm một dòng **Custom…** để bạn tự nhập giá trị khác. Model không khai báo effort thì không hiện nút effort.
-   - Model tự khai trong settings (`llm-pi-ai.providers.<provider>.models`) **phải có `reasoningEfforts`** thì Host mới báo model đó có reasoning và nút mới hiện. Ví dụ: `"reasoningEfforts": { "off": null, "low": "low", "medium": "medium", "high": "high" }` — mỗi khoá là mức hiện trong menu, mỗi giá trị là chuỗi gửi lên provider; `off` để `null` nghĩa là "được hỗ trợ, gửi không tham số".
+That asymmetry is deliberate. DSH's content-block vocabulary is `text`, `reasoning`, `image`, `tool-call`, `tool-result` — there is no `file` block — so a document cannot be handed over the way an image can, and needs the instruction path instead.
 
 ---
 
-## 🛠️ Cài đặt vào DeepSeek Harness
+## Features
 
-### Cách 1: Cài đặt bằng 1 dòng lệnh duy nhất (Khuyên dùng)
+### Attaching
 
-Mở terminal và chạy lệnh:
+- **📷 Add photo** (`/photos`) — pick one or many images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`). They are admitted as **native draft images**, so the model receives the image itself. Nothing is typed into your composer.
+- **📄 Add file** (`/files`) — pick one or many documents (`.txt`, `.pdf`, `.json`, `.csv`, source code, archives…). They are uploaded to the workspace and a **reference chip** is minted into your draft.
+- **📂 Uploaded files** (`/uploads`) — browse everything uploaded in this session and re-reference it with one click.
+- Both `[📷]` and `[📄]` also sit **directly on the composer toolbar**, left of the model button, so you never have to open the `+` menu.
+- The `/photos` command and the `[📷]` button run **the same code path**, so the two entry points cannot drift apart.
+
+### The attachment rail
+
+- The rail draws exactly the files your **live draft** references, so it empties itself once you send. There is no separate plugin-side list to get out of sync.
+- Removing an attachment with `✕` deletes only that chip. **Text you have already typed is preserved.**
+- Photos do not appear on this rail — they are DSH's own native draft images, rendered and removed by the composer itself.
+
+### Injection: one shot per send
+
+- The read instruction travels as a **Context injection** row, the same way DSH injects its own context — it is **not** part of your message.
+- **One shot per send.** The live attachment set is handed to the host and consumed when the next turn starts, so **the message after a send carries no instruction** unless you attach again. There is no pending queue.
+- A file-only message also carries one invisible zero-width character. That is not decoration: DSH silently refuses to send a message with no text and no images, and the chip's serialization is what keeps an attach-then-send alive.
+
+### Model + reasoning effort
+
+- The composer keeps **DSH's own model selector** — this plugin does not take that seat over.
+- An **effort button** sits to its left, offering the levels the model declares on the Host plus a **Custom…** row for a value the catalog does not list.
+- The list is built from the Host's own vocabulary, so it can never offer a level the Host would reject. **A model that declares no reasoning shows no effort button at all** — see [Enabling the effort button](#enabling-the-effort-button).
+
+### Vision declarations
+
+- **Settings → Vision** gives you one checkbox per model, grouped by provider, writing `input: ["text", "image"]` into that model's row. Turning one off removes the `input` key.
+- The page writes into the **same settings document the Models page owns**, addressed at exactly `providers.<id>.models`, so **every other field of the row and the provider survives** — including fields this plugin knows nothing about.
+- It reads the document back immediately before writing and sends an `expectedRevision`, so a concurrent edit is refused ("the configuration just changed elsewhere") rather than overwritten.
+- It subscribes to `settings/document-updated` for its namespace, so it stays fresh when another surface changes the document.
+- **This is a declaration, not a probe.** The page states that a model is declared able to read images; it never checks whether the upstream actually serves them.
+
+---
+
+## Requirements
+
+- **DeepSeek Harness** with the `web` profile.
+- **Node.js** and **pnpm** for a source install.
+
+---
+
+## Installation
+
+### From GitHub (recommended)
 
 ```bash
-# Nếu dùng lệnh dsh:
 dsh plugin --profile web add github:danhcng3822f/dsh-upload-plugin
+```
 
-# Hoặc nếu dùng pnpm trực tiếp:
+or with pnpm directly:
+
+```bash
 pnpm --prefix ~/.dsh/profiles/web add github:danhcng3822f/dsh-upload-plugin
 ```
 
-> **Lưu ý:** DeepSeek Harness sẽ tự động nạp plugin vào profile `web`, tự động đăng ký vào danh sách `bundles` mà bạn **không cần phải chỉnh sửa file cấu hình bằng tay**. Sau đó chỉ cần khởi động lại DSH hoặc tải lại trang web `http://127.0.0.1:3080`.
+DSH registers the plugin into the `web` profile for you — no hand-editing configuration files. Restart DSH or reload `http://127.0.0.1:3080`.
 
----
+### From a local checkout (development)
 
-### Cách 2: Cài đặt từ mã nguồn cục bộ (Dành cho Developer)
-
-1. Clone repository về máy tính:
 ```bash
 git clone https://github.com/danhcng3822f/dsh-upload-plugin.git
 cd dsh-upload-plugin
 pnpm install
 pnpm run build
-```
-
-2. Chạy lệnh liên kết vào profile:
-```bash
-pnpm --prefix ~/.dsh/profiles/web add link:/duong/dan/toi/dsh-upload-plugin
+pnpm --prefix ~/.dsh/profiles/web add link:/path/to/dsh-upload-plugin
 ```
 
 ---
 
-## ⚙️ Cấu hình Custom Provider hỗ trợ Vision
+## Configuration
 
-Để model từ Custom Provider có thể xem và phân tích ảnh, hãy thêm modality `"image"` vào trường `"input"` trong cấu hình provider của bạn:
+### Enabling vision for a model
+
+For a model from a custom provider to be able to read images, its row needs the `image` modality:
 
 ```json
 {
@@ -101,81 +110,103 @@ pnpm --prefix ~/.dsh/profiles/web add link:/duong/dan/toi/dsh-upload-plugin
 }
 ```
 
----
+You can write that by hand, or use **Settings → Vision** in the UI.
 
-## 🖼️ Trang Settings → Vision của plugin
+A model that does **not** declare vision still accepts an attached photo — the plugin only warns. Because the photo now travels as real image content, the provider refuses that turn outright rather than the model quietly ignoring an instruction.
 
-Plugin đăng ký thêm một trang cấu hình riêng: **Settings → Vision**. Thay vì sửa JSON bằng tay, bạn bật/tắt khả năng đọc ảnh cho từng model bằng checkbox.
+### Enabling the effort button
 
-- **Một toggle cho mỗi model**, nhóm theo từng provider. Model nào không có `id` sẽ bị bỏ qua (có ghi chú số lượng bỏ qua).
-- Bật toggle sẽ ghi `input: ["text","image"]` vào đúng dòng model đó; tắt toggle sẽ **xoá hẳn** khoá `input` khỏi dòng.
-- **Đây là một khai báo (declaration), không phải phép đo.** Trang này chỉ nói lên rằng model *được khai báo* là đọc được ảnh — nó **không hề kiểm tra** upstream có thật sự phục vụ ảnh hay không.
-- Các toggle ghi vào **cùng tài liệu settings mà trang Models đang quản lý** (namespace `llm-pi-ai`), chứ không tạo bản sao riêng. Mỗi lần ghi chỉ định đúng một đường dẫn `providers.<id>.models`, nên **mọi trường khác của dòng model và của provider đều được giữ nguyên** — kể cả những trường plugin này không biết.
-- Trang đọc lại tài liệu ngay trước khi ghi và gửi kèm `expectedRevision`, nên nếu cấu hình vừa bị đổi ở nơi khác thì thao tác bị từ chối (báo "Cấu hình vừa bị thay đổi ở nơi khác. Thử lại.") thay vì ghi đè.
-- Trang **tự làm mới** khi tài liệu settings bị thay đổi từ nơi khác (trang Models, tab khác, hoặc sửa file bằng tay): nó theo dõi sự kiện `settings/document-updated` của namespace `llm-pi-ai`.
-- Nếu Host đang ở chế độ chỉ đọc, các checkbox bị vô hiệu hoá và trang nói rõ điều đó.
+A model declared by hand in your settings carries **no reasoning metadata** until you declare it, and the Host reports none — which is why the effort button can be absent on a model that plainly reasons.
 
----
+Add `reasoningEfforts` to the model's row:
 
-## 💻 Lệnh phát triển & Kiểm thử
-
-```bash
-# Cài đặt thư viện
-pnpm install
-
-# Chạy kiểm thử tự động (Vitest, 167 unit test cho phần logic thuần)
-pnpm test
-
-# Build mã nguồn (Host TypeScript & Client ESBuild Bundle)
-pnpm run build
+```json
+{
+  "id": "your-model",
+  "name": "Your Model",
+  "input": ["text", "image"],
+  "reasoningEfforts": { "off": null, "low": "low", "medium": "medium", "high": "high" }
+}
 ```
 
+- Each **key** is a level the menu offers; each **value** is the wire spelling sent to the provider.
+- `off` may be `null`, meaning *supported, send no parameter* — for most providers not thinking is the parameter's absence.
+- The levels the Host recognises are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A level you leave out is simply not offered.
+
 ---
 
-## 📁 Cấu trúc dự án
+## Troubleshooting
+
+**The effort button does not appear.**
+The model declares no reasoning. Add `reasoningEfforts` to its row as above — this is the single most common cause, and it is a declaration you have to make, not a bug.
+
+**The model does not seem to see an attached photo.**
+Check that the model's row declares `input: ["text", "image"]`. Then confirm the provider actually serves image content: this plugin states a declaration, it cannot probe the upstream for you.
+
+**A message with only a file attached does nothing when I press Enter.**
+DSH refuses a message with no text and no images. The plugin keeps a zero-width character on the chip so this does not happen; if you have removed the chip by hand, type something or re-attach.
+
+**The instruction row appears on a message that has no attachment.**
+It should not. The attachment set is consumed when a turn starts; if you see this, the client's sync and the host's consumption have gone out of step — please open an issue with what you did.
+
+---
+
+## Development
+
+```bash
+pnpm install     # install dependencies
+pnpm test        # Vitest — 167 unit tests over the pure logic
+pnpm run build   # tsc for the host half, esbuild for the browser bundle
+```
+
+The suite runs in a plain `node` environment with no DOM, so it covers the pure logic — record arithmetic, the admission planner, the effort menu, the settings read-modify-write, the injection handler — while the rendered components are exercised by hand in a running harness.
+
+---
+
+## Project structure
 
 ```text
 dsh-upload-plugin/
 ├── src/
-│   ├── types.ts              # Định nghĩa interface API & kiểu dữ liệu
-│   ├── instruction.ts        # Câu chỉ dẫn đọc tệp — MỘT định nghĩa, dùng chung cho cả host lẫn client
-│   ├── index.ts              # Host-side entry point (Cordis plugin, WebServer endpoints & context injection)
+│   ├── types.ts                   # Shared API and data types
+│   ├── instruction.ts             # The read instruction — ONE definition, shared by host and client
+│   ├── index.ts                   # Host entry (Cordis plugin, web server endpoints, context injection)
 │   ├── host/
-│   │   ├── endpoints.ts      # Xử lý check vision, upload file, list uploads, view file và sync refs
-│   │   ├── file-utils.ts     # Tiện ích định danh file và phân giải đường dẫn duy nhất
-│   │   ├── refs-store.ts     # Tập đính kèm đang sống mỗi session (Host giữ, client đẩy lên)
-│   │   ├── context-injection.ts # Chèn chỉ dẫn vào lượt kế tiếp qua `agent/pre-step`
-│   │   └── llm-modules.d.ts  # Khai báo kiểu hợp đồng Harness mà nửa Host dùng
+│   │   ├── endpoints.ts           # Vision check, upload, list, view and ref sync
+│   │   ├── file-utils.ts          # File identity and unique path resolution
+│   │   ├── refs-store.ts          # Live attachment set per session (host-held, client-pushed)
+│   │   ├── context-injection.ts   # Injects the instruction into the next turn via `agent/pre-step`
+│   │   └── llm-modules.d.ts       # Harness contracts the host half consumes
 │   └── client/
-│       ├── index.ts          # Client-side entry point (nạp vào trình duyệt)
-│       ├── commands.ts       # Đăng ký lệnh /photos, /files, /uploads vào menu dấu cộng
-│       ├── attachment-bar.ts # Thanh đính kèm trong chat composer & Lightbox viewer
-│       ├── attachments.ts    # Bản ghi đính kèm và các phép toán danh sách thuần
-│       ├── attachment-store.ts # Kho bản ghi theo từng session (localStorage)
-│       ├── reference.ts      # Nguồn tham chiếu `vision` + mint chip vào bản nháp
-│       ├── ref-sync.ts       # Đẩy tập đính kèm đang sống lên Host khi bản nháp đổi
-│       ├── intake.ts         # Quy trình nhận ảnh native, dùng chung cho 📷 và /photos
-│       ├── effort.ts         # Dựng menu reasoning effort từ metadata của Host
-│       ├── vision-setting.ts # Đọc-sửa-ghi trường `input` của một dòng model
-│       ├── platform-modules.d.ts # Khai báo kiểu cho platform module không cài được qua npm
+│       ├── index.ts               # Client entry (loaded into the browser)
+│       ├── commands.ts            # /photos, /files and /uploads registrations
+│       ├── attachment-bar.ts      # The composer rail and the lightbox viewer
+│       ├── attachments.ts         # Attachment records and pure list operations
+│       ├── attachment-store.ts    # Per-session record store (localStorage)
+│       ├── reference.ts           # The `vision` reference source and chip minting
+│       ├── ref-sync.ts            # Pushes the live attachment set to the host as the draft changes
+│       ├── intake.ts              # Native image admission, shared by 📷 and /photos
+│       ├── effort.ts              # Builds the effort menu from the Host's metadata
+│       ├── vision-setting.ts      # Read-modify-write of one model row's `input` field
+│       ├── platform-modules.d.ts  # Types for platform modules that cannot be installed from npm
 │       ├── composer/
-│       │   ├── attach-buttons.tsx # Hai nút 📷 / 📄 trên thanh công cụ composer
-│       │   ├── effort-control.tsx # Nút reasoning effort (bên trái nút chọn model)
-│       │   └── icons.tsx     # Icon riêng của plugin
+│       │   ├── attach-buttons.tsx # The 📷 and 📄 toolbar buttons
+│       │   ├── effort-control.tsx # The effort button, left of the model button
+│       │   └── icons.tsx          # This plugin's own glyphs
 │       ├── settings/
-│       │   └── vision-section.tsx # Trang Settings → Vision
-│       └── uploader.ts       # File picker và upload
+│       │   └── vision-section.tsx # The Settings → Vision page
+│       └── uploader.ts            # File picker and upload
 ├── lib/
-│   ├── index.js              # Host bundle đã biên dịch
-│   └── client.js             # Client bundle trình duyệt (Web)
-├── tests/                    # Bộ kiểm thử đơn vị tự động Vitest
-├── cordis.patch.yml          # Cấu hình Cordis DI
-├── LICENSE                   # Giấy phép nguồn mở MIT
+│   ├── index.js                   # Compiled host bundle
+│   └── client.js                  # Compiled browser bundle
+├── tests/                         # Vitest unit tests
+├── cordis.patch.yml               # Cordis dependency-injection configuration
+├── LICENSE                        # MIT
 └── package.json
 ```
 
 ---
 
-## 📄 Giấy phép (License)
+## License
 
-Dự án được phân phối dưới giấy phép nguồn mở [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).
