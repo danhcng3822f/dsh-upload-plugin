@@ -48,7 +48,9 @@ That asymmetry is deliberate. DSH's content-block vocabulary is `text`, `reasoni
 ### Model + reasoning effort
 
 - The composer keeps **DSH's own model selector** — this plugin does not take that seat over.
-- An **effort button** sits to its left, offering the levels the model declares on the Host plus a **Custom…** row for a value the catalog does not list.
+- An **effort button** sits to its left, offering the levels the model declares on the Host plus a **Custom…** row.
+- **Custom… adds a level.** Pick one the menu does not list and the plugin writes it into that model's `reasoningEfforts` declaration — the same settings document the Models page owns — and then selects it. Adding a level by hand and adding it through Custom… are the same act.
+- A value outside the Host's vocabulary is refused **in the menu**, immediately, naming the levels that are allowed — rather than being accepted and then rejected later.
 - The list is built from the Host's own vocabulary, so it can never offer a level the Host would reject. **A model that declares no reasoning shows no effort button at all** — see [Enabling the effort button](#enabling-the-effort-button).
 
 ### Vision declarations
@@ -131,7 +133,8 @@ Add `reasoningEfforts` to the model's row:
 
 - Each **key** is a level the menu offers; each **value** is the wire spelling sent to the provider.
 - `off` may be `null`, meaning *supported, send no parameter* — for most providers not thinking is the parameter's absence.
-- The levels the Host recognises are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A level you leave out is simply not offered.
+- The levels the Host recognises are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A level you leave out is simply not offered — **Custom… can add one of them for you**, using the level name as its wire spelling.
+- **The first declaration is the one you have to make by hand.** A model with no `reasoningEfforts` at all has no wire spellings to preserve, and the installed catalog's spellings are not the level names — so the plugin refuses to invent them. Declare the model's real levels once, and Custom… can extend them afterwards.
 
 ---
 
@@ -139,6 +142,12 @@ Add `reasoningEfforts` to the model's row:
 
 **The effort button does not appear.**
 The model declares no reasoning. Add `reasoningEfforts` to its row as above — this is the single most common cause, and it is a declaration you have to make, not a bug.
+
+**Custom… refuses the level I typed.**
+The Host recognises exactly seven level names — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` — and the declaration's keys are validated against them, so a token budget or a provider-specific name cannot be used at all. If the menu names a *different* reason, the model has no `reasoningEfforts` yet: declare its real levels by hand once, then Custom… can extend them.
+
+**I set an effort and the turn failed with "does not support reasoning effort".**
+The level was not in the model's declaration. This is the failure Custom… exists to prevent — it now declares a missing level before selecting it — so if you still see it, the declaration write did not land; check that the settings document is writable.
 
 **The model does not seem to see an attached photo.**
 Check that the model's row declares `input: ["text", "image"]`. Then confirm the provider actually serves image content: this plugin states a declaration, it cannot probe the upstream for you.
