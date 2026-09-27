@@ -27,12 +27,42 @@
  * - a chip removed by the rail's ✕ — the remover writes the draft through
  *   `inputActions.setDraft`, the same re-render;
  * - a send that empties the draft — the machine clears `occurrences` and adopts
- *   the empty draft (`ui-conversation/src/client/input/machine.ts:516,546`), so
+ *   the empty draft (`ui-conversation/src/client/input/machine.ts:546`), so
  *   the next render pushes the empty set.
  *
  * The push is de-duplicated against the last set sent for that session, because
  * "on every render" means once per keystroke: without the guard this would be a
  * POST per character typed.
+ *
+ * ## Why a push carries a reason (R31)
+ *
+ * "Here is the live set" is enough for every non-empty push, and not enough for
+ * an empty one: the draft empties because a send consumed it OR because the user
+ * removed the attachment, and those need opposite treatment on the host.
+ *
+ * - After a send the refs belong to the turn that is about to run, and the host
+ *   must still have them when its first step claims them. Clearing them there is
+ *   the bug: the empty push lands before the claim can happen, and every message
+ *   with an attachment injected nothing.
+ * - After a removal the user took the attachment back, and injecting it is wrong.
+ *
+ * This is decided here because the client is the side that can tell the two
+ * apart, and the send is observable on exactly the path that needs it:
+ * `ReferenceCodec.serialize` (`src/client/reference.ts`) is called once per
+ * occurrence DURING submit (`ui-conversation/src/client/input/facade.ts:427`,
+ * reached from the `default-sink` effect at `:416`), and the draft is not cleared
+ * until every serialization has resolved (`hub.ts:158` → `facade.ts:155` →
+ * `machine.ts:544`). So the mark is set before the empty push, by the promise
+ * chain rather than by any window of time. A removal never calls `serialize` at
+ * all.
+ *
+ * The shape chosen is the reason the host honours, not the client swallowing the
+ * push, and the difference matters: a client that simply did not issue the empty
+ * push would leave its own de-duplication cache claiming the host holds a set the
+ * host may not hold, and the next identical set — the user re-referencing the
+ * same file through `/photos`, which reuses the record's ref — would then be
+ * de-duplicated away and never re-armed. Saying why keeps the cache truthful and
+ * puts the decision where both facts are known.
  *
  * ## What it is NOT relied on for
  *
@@ -61,6 +91,36 @@ export declare const REFS_ENDPOINT = "/api/vision-plugin/refs";
  */
 export declare function liveRecords(occurrences: readonly ChipOccurrence[], records: readonly AttachmentRecord[], byRef: (ref: string) => AttachmentRecord | undefined): AttachmentRecord[];
 /**
+ * Note that one chip was serialized for a send.
+ *
+ * Called by the reference codec (`src/client/reference.ts`) once per occurrence on
+ * the submit path, and by nothing else. This is the send's only observable trace
+ * on the client, and it is set strictly before the draft is committed — the
+ * harness awaits every serialization before it clears the draft — so the empty
+ * push that follows a send can be recognized as one.
+ *
+ * A ref whose serialization FAILS is deliberately not marked: the send is blocked
+ * in that case and the draft is retained, so no empty push follows it.
+ * @param ref - the chip's reference id.
+ */
+export declare function noteSerializedRef(ref: string): void;
+/**
+ * Note that the rail's ✕ took one attachment out of the draft.
+ *
+ * Called from the one place that knows the removal really happened — the remover
+ * in `src/client/attachment-bar.ts`, immediately before the draft write — because
+ * a removal must beat a send mark that an earlier, blocked submit left behind:
+ * the user took the attachment back after trying to send it, and the host must
+ * not inject it.
+ *
+ * A removal by EDITING the draft (backspacing over the placeholder) has no such
+ * call, and does not need one: an empty push with no evidence at all is classified
+ * as a removal, which is also why a removal mark that is never consumed is
+ * harmless — `removed` is the default it would have been given anyway.
+ * @param sessionId - the session whose draft the removal was written into.
+ */
+export declare function noteDraftRemoval(sessionId: string): void;
+/**
  * Push one session's live set to the host, when it differs from the last push.
  *
  * Never throws and never rejects: this runs inside a React effect on the composer's
@@ -76,10 +136,12 @@ export declare function liveRecords(occurrences: readonly ChipOccurrence[], reco
  */
 export declare function syncActiveRefs(sessionId: string, refs: readonly AttachmentRecord[], fetchImpl?: typeof fetch | null): boolean;
 /**
- * Forget what was last pushed for a session.
+ * Forget what was last pushed for a session, and any evidence waiting to classify
+ * the next push.
  *
  * For tests, and for a session switch: clearing means the set is re-pushed rather
- * than assumed delivered.
+ * than assumed delivered, and a stale send or removal mark cannot decide a push
+ * that belongs to a different draft.
  * @param sessionId - the session to forget, or undefined for every session.
  */
 export declare function resetRefSync(sessionId?: string): void;

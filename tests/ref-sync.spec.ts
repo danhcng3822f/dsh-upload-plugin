@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  REFS_ENDPOINT, liveRecords, resetRefSync, syncActiveRefs,
+  REFS_ENDPOINT, liveRecords, noteDraftRemoval, noteSerializedRef, resetRefSync, syncActiveRefs,
 } from '../src/client/ref-sync.js'
 import { makeRef, type AttachmentRecord, type ChipOccurrence } from '../src/client/attachments.js'
+import type { RefPushReason } from '../src/types.js'
 
 const record = (token: string, isPhoto = false): AttachmentRecord => ({
   token,
@@ -25,6 +26,11 @@ function fakeFetch(ok = true) {
     return Promise.resolve({ ok })
   }) as unknown as typeof fetch
   return { calls, impl }
+}
+
+/** The reason one recorded push carried. */
+function reasonOf(call: { init: RequestInit }): RefPushReason {
+  return JSON.parse(String(call.init.body)).reason
 }
 
 beforeEach(() => { resetRefSync() })
@@ -78,6 +84,7 @@ describe('syncActiveRefs', () => {
     expect(calls[0]!.init.method).toBe('POST')
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
       sessionId: 's1',
+      reason: 'live',
       refs: [{ ref: a.ref, relativePath: a.relativePath, isPhoto: false }],
     })
   })
@@ -146,6 +153,9 @@ describe('syncActiveRefs', () => {
     await Promise.resolve(); await Promise.resolve()
     expect(syncActiveRefs('s1', [a], impl)).toBe(true)
     expect(calls).toHaveLength(2)
+    // The re-issue says it is the same set again, so the host can tell it apart
+    // from a set the user just changed and must not re-arm one it has spent.
+    expect(reasonOf(calls[1]!)).toBe('retry')
   })
 
   it('re-arms after a transport failure', async () => {
@@ -180,5 +190,187 @@ describe('syncActiveRefs', () => {
     resetRefSync()
     expect(syncActiveRefs('s1', [a], impl)).toBe(true)
     expect(calls).toHaveLength(3)
+  })
+})
+
+/**
+ * R31: the reason every push carries, which is how the host tells an empty set
+ * caused by a SEND (keep the refs — the turn about to run must still claim them)
+ * from one caused by a REMOVAL (clear them). The client is the side that can tell
+ * them apart, so the classification is pinned here.
+ *
+ * The evidence for a send is `noteSerializedRef`, called by the reference codec on
+ * the submit path only; a removal by the rail's ✕ is `noteDraftRemoval`. Neither
+ * is a guess about timing: the harness awaits every serialization before it clears
+ * the draft, so the mark is set before the empty push by construction.
+ */
+describe('syncActiveRefs — the reason it carries', () => {
+  it('says live for the first set and for every change to it', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    const b = record('b.txt')
+    syncActiveRefs('s1', [a], impl)
+    syncActiveRefs('s1', [a, b], impl)
+    syncActiveRefs('s1', [b], impl)
+    expect(calls.map(reasonOf)).toEqual(['live', 'live', 'live'])
+  })
+
+  // The reported bug: a send empties the draft, and the empty push that follows
+  // must NOT be read as a removal.
+  it('says sent for the empty push that follows a send', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    noteSerializedRef(a.ref)
+    expect(syncActiveRefs('s1', [], impl)).toBe(true)
+    expect(reasonOf(calls[1]!)).toBe('sent')
+    expect(JSON.parse(String(calls[1]!.init.body)).refs).toEqual([])
+  })
+
+  it('says sent for every chip the send serialized', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    const b = record('b.txt')
+    syncActiveRefs('s1', [a, b], impl)
+    noteSerializedRef(a.ref)
+    noteSerializedRef(b.ref)
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[1]!)).toBe('sent')
+  })
+
+  // The removal half of the distinction, and the default for an empty set: with
+  // no evidence of a send, an empty push means the user took the attachment back.
+  it('says removed for an empty push with no evidence of a send', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[1]!)).toBe('removed')
+  })
+
+  it('says removed for the rail\'s ✕, even with a stale send mark', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    // A submit that serialized the chip and then never emptied the draft — a send
+    // the host refused — leaves its mark behind. The user's ✕ afterwards is the
+    // more recent fact and must win, or the host would inject a removed file.
+    noteSerializedRef(a.ref)
+    noteDraftRemoval('s1')
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[1]!)).toBe('removed')
+  })
+
+  it('says removed for an empty push when a serialize of another session is the only mark', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    const elsewhere = { ...record('c.txt'), ref: makeRef('zzz99999', 'c.txt') }
+    syncActiveRefs('s1', [a], impl)
+    noteSerializedRef(elsewhere.ref)
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[1]!)).toBe('removed')
+  })
+
+  // The marks are evidence about ONE push, and are spent by it: otherwise a
+  // blocked submit's mark would decide a later, unrelated empty push.
+  it('spends the send mark on the push that reads it', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    noteSerializedRef(a.ref)
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[1]!)).toBe('sent')
+    // The user references the same file again, then removes it: no new serialize
+    // happened, so this empty push is a removal and must clear the host.
+    syncActiveRefs('s1', [a], impl)
+    syncActiveRefs('s1', [], impl)
+    expect(calls.map(reasonOf)).toEqual(['live', 'sent', 'live', 'removed'])
+  })
+
+  it('spends the removal mark on the push that reads it', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    noteDraftRemoval('s1')
+    syncActiveRefs('s1', [], impl)
+    // Re-attach, then send: the removal mark is gone, so the send is recognized.
+    syncActiveRefs('s1', [a], impl)
+    noteSerializedRef(a.ref)
+    syncActiveRefs('s1', [], impl)
+    expect(calls.map(reasonOf)).toEqual(['live', 'removed', 'live', 'sent'])
+  })
+
+  it('says retry only for the set whose push was not confirmed', async () => {
+    const { calls, impl } = fakeFetch(false)
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    expect(reasonOf(calls[0]!)).toBe('live')
+    await Promise.resolve(); await Promise.resolve()
+    syncActiveRefs('s1', [a], impl)
+    expect(reasonOf(calls[1]!)).toBe('retry')
+    // A changed set is a change the user made, never a retry.
+    syncActiveRefs('s1', [{ ...a, isPhoto: true }], impl)
+    expect(reasonOf(calls[2]!)).toBe('live')
+  })
+
+  // The retry path of the fix itself. The first `sent` push spends the evidence
+  // that decided it, so a re-issue that re-derived the reason would read the same
+  // empty set as a removal and erase the refs — the bug, reached through a lost
+  // response instead of through a send.
+  it('re-says sent when the send\'s own empty push was not confirmed', async () => {
+    const { calls, impl } = fakeFetch(false)
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    await Promise.resolve(); await Promise.resolve()
+    noteSerializedRef(a.ref)
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[1]!)).toBe('sent')
+    await Promise.resolve(); await Promise.resolve()
+    // The next render retries the same empty set.
+    syncActiveRefs('s1', [], impl)
+    expect(reasonOf(calls[2]!)).toBe('sent')
+  })
+
+  it('re-says removed when the removal\'s own empty push was not confirmed', async () => {
+    const { calls, impl } = fakeFetch(false)
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    await Promise.resolve(); await Promise.resolve()
+    noteDraftRemoval('s1')
+    syncActiveRefs('s1', [], impl)
+    await Promise.resolve(); await Promise.resolve()
+    syncActiveRefs('s1', [], impl)
+    expect(calls.map(reasonOf)).toEqual(['live', 'removed', 'removed'])
+  })
+
+  // The classification is per session: it asks whether the refs THIS session last
+  // reported were serialized. Two sessions pushing in the same instant are told
+  // apart by exactly that, and a ref belonging to another session can never
+  // classify this one's empty push as a send.
+  it('classifies each session against the refs it last reported', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    const b = record('b.txt')
+    syncActiveRefs('s1', [a], impl)
+    syncActiveRefs('s2', [b], impl)
+    // Only s1's chip was serialized: s2's draft was emptied by a removal.
+    noteSerializedRef(a.ref)
+    syncActiveRefs('s1', [], impl)
+    syncActiveRefs('s2', [], impl)
+    expect(calls.map(reasonOf)).toEqual(['live', 'live', 'sent', 'removed'])
+  })
+
+  it('forgets the marks when a session is reset', () => {
+    const { calls, impl } = fakeFetch()
+    const a = record('a.txt')
+    syncActiveRefs('s1', [a], impl)
+    noteSerializedRef(a.ref)
+    noteDraftRemoval('s1')
+    resetRefSync('s1')
+    // Nothing is remembered, so the first push after a reset is a plain live set
+    // and a following empty push is a removal rather than the old send.
+    syncActiveRefs('s1', [a], impl)
+    syncActiveRefs('s1', [], impl)
+    expect(calls.map(reasonOf)).toEqual(['live', 'live', 'removed'])
   })
 })

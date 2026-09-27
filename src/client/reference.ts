@@ -1,6 +1,7 @@
 import type { AttachmentStore } from './attachment-store.js'
 import type { AttachmentRecord } from './attachments.js'
 import { VISION_SOURCE } from './attachments.js'
+import { noteSerializedRef } from './ref-sync.js'
 
 /** Structural shapes for the trigger-source contract (type-only elsewhere; no runtime import). */
 export interface SourceSession {
@@ -133,6 +134,13 @@ export function createVisionSource(store: AttachmentStore): VisionSource {
           // through carrying a placeholder that points at nothing.
           throw new Error(`vision: unknown attachment reference "${ref}"`)
         }
+        // R31 — this call IS the send, as far as the client can observe one, and
+        // it is the only place the plugin sees one before the draft it is about
+        // to empty is re-pushed as an empty set. `ref-sync` uses it to tell an
+        // empty push caused by a send from one caused by a removal, which need
+        // opposite treatment on the host. Marked only on the success path: a
+        // throw blocks the send and the draft is retained, so nothing empties.
+        noteSerializedRef(ref)
         return ZERO_WIDTH_PLACEHOLDER
       },
     },

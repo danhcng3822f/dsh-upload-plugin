@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { createVisionSource, mintChip, nextChipCursor, ZERO_WIDTH_PLACEHOLDER } from '../src/client/reference.js'
 import { AttachmentStore } from '../src/client/attachment-store.js'
 import { makeRef } from '../src/client/attachments.js'
+import { resetRefSync, syncActiveRefs } from '../src/client/ref-sync.js'
+import type { RefPushReason } from '../src/types.js'
 
 const session = (sessionId: string) => ({ sessionId } as never)
 
@@ -94,6 +96,55 @@ describe('createVisionSource', () => {
   it('falls back to the raw ref when the store holds no record for it', () => {
     const source = createVisionSource(storeWith('s1', 'a.png'))
     expect(source.codec.clipboardText('gone')).toBe('@gone')
+  })
+})
+
+/**
+ * R31: `serialize` is the only trace a SEND leaves on the client, and the ref
+ * sync reads it to tell an empty push caused by a send (the host must keep the
+ * refs) from one caused by a removal (the host must clear them). Pinned here
+ * rather than only in `ref-sync.spec.ts` so that deleting the call from the codec
+ * fails a test in the codec's own spec.
+ */
+describe('the codec as the send\'s evidence', () => {
+  /** A `fetch` stand-in that records the reason of each push. */
+  function fakeFetch() {
+    const reasons: RefPushReason[] = []
+    const impl = ((_url: string, init: RequestInit) => {
+      reasons.push(JSON.parse(String(init.body)).reason)
+      return Promise.resolve({ ok: true })
+    }) as unknown as typeof fetch
+    return { reasons, impl }
+  }
+
+  const chip = (ref: string) => ({
+    token: 'a.png', ref, relativePath: 'uploads/s1/a.png', isPhoto: true, size: 1, uploadedAt: 1,
+  })
+
+  beforeEach(() => { resetRefSync() })
+
+  it('marks the chip it serialized, so the empty push after a send says sent', async () => {
+    const { reasons, impl } = fakeFetch()
+    const source = createVisionSource(storeWith('s1', 'a.png'))
+    const ref = makeRef('abc12345', 'a.png')
+    syncActiveRefs('s1', [chip(ref)], impl)
+    await source.codec.serialize(ref, new AbortController().signal)
+    // The draft is committed and the rail re-renders with nothing in it.
+    syncActiveRefs('s1', [], impl)
+    expect(reasons).toEqual(['live', 'sent'])
+  })
+
+  // The failure path is not a send: the harness rejects the whole attempt, the
+  // draft is retained, and nothing empties. A mark here would let a later,
+  // unrelated removal be read as a send and the removed file would inject.
+  it('marks nothing when the serialization fails, so the send is not a send', async () => {
+    const { reasons, impl } = fakeFetch()
+    const source = createVisionSource(storeWith('s1', 'a.png'))
+    const ref = makeRef('abc12345', 'a.png')
+    syncActiveRefs('s1', [chip(ref)], impl)
+    await expect(source.codec.serialize('gone', new AbortController().signal)).rejects.toThrow()
+    syncActiveRefs('s1', [], impl)
+    expect(reasons).toEqual(['live', 'removed'])
   })
 })
 

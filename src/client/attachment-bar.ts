@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import type { InputActions, InputState } from '@deepseek-ai/dsh-client-ui-conversation'
 import type { AttachmentStore } from './attachment-store.js'
 import { VISION_SOURCE, type AttachmentRecord, type ChipOccurrence } from './attachments.js'
-import { liveRecords, syncActiveRefs } from './ref-sync.js'
+import { liveRecords, noteDraftRemoval, syncActiveRefs } from './ref-sync.js'
 import { formatFileSize } from './uploader.js'
 
 /** The placeholder one chip occupies in the draft; an occurrence covers exactly `[offset, offset + 1)`. */
@@ -155,6 +155,12 @@ export function AttachmentRailEntry({ sessionId, input, inputActions }: RailEntr
       if (occurrence?.offset === undefined) return
       const next = draftWithoutChip(draft, occurrence.offset)
       if (next === undefined) return
+      // R31: this write is a removal, and the host must hear about it as one —
+      // an empty push after a removal clears the host's set, while an empty push
+      // after a send must not. Marked here, where the removal is real: a ✕ that
+      // bails above must not be able to decide a later push. See
+      // `noteDraftRemoval` for why a mark that is never consumed is harmless.
+      noteDraftRemoval(sessionId)
       inputActions?.setDraft(next)
     })
     renderAttachmentBar({ sessionId, occurrences })

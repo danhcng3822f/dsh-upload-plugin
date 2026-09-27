@@ -9,17 +9,45 @@
  * endpoint (`src/host/endpoints.ts`, `handleSyncRefs`) and this store holds it
  * until the next turn claims it.
  *
+ * ## Why a push carries a reason (R31)
+ *
+ * A non-empty push is unambiguous: the client is the authority on its own draft.
+ * An empty one is not, and the two causes need opposite treatment. A committed
+ * send empties the draft, and the refs it consumed still belong to the turn
+ * about to run — clearing them there is the bug this reason exists to fix, since
+ * the client's own empty push landed BEFORE the turn's first step could claim
+ * them. A removal empties the draft because the user took the attachment back,
+ * and injecting it would be wrong.
+ *
+ * So `reason` decides, and the client is the side that knows
+ * (`src/client/ref-sync.ts`): `sent` keeps the held set untouched, `removed`
+ * clears it, `live` replaces and re-arms it, `retry` re-asserts it without
+ * re-arming an identical held set.
+ *
  * A pure in-memory map on purpose: nothing here needs to survive a host restart,
  * because a draft that survived a restart is re-pushed by the client on its next
  * render, and an injection that never happened is better than one replayed into
- * an unrelated turn.
+ * an unrelated turn. The push log below is in memory for the same reason — it
+ * describes THIS process's view, which is exactly what a diagnosis is asking
+ * about.
  *
  * @module dsh-upload-plugin/host/refs-store
  */
 
-import type { PendingAttachment } from '../types.js'
+import type { PendingAttachment, RefPushReason, RefPushRecord } from '../types.js'
 
-/** What the host holds for one session: the live refs, and whether they are still owed. */
+/**
+ * How many pushes per session the diagnostic log keeps.
+ *
+ * Bounded because a composer re-render pushes on every change and a long session
+ * would otherwise grow this map without limit. Twenty is several times the
+ * attach/send/attach/remove cycle a diagnosis walks, and the oldest entry falling
+ * off is harmless: the log answers "what did the last few pushes say", not "what
+ * happened an hour ago".
+ */
+export const PUSH_LOG_LIMIT = 20
+
+/** What the host holds for one session: the live refs, whether they are still owed, and how they got there. */
 interface SessionRefs {
   /** The live set as the client last reported it, oldest first. */
   refs: PendingAttachment[]
@@ -34,31 +62,92 @@ interface SessionRefs {
    * happily re-inject the same set on the next message.
    */
   spent: boolean
+  /** The last pushes for this session, oldest first, capped at `PUSH_LOG_LIMIT`. */
+  log: RefPushRecord[]
 }
 
 const sessions = new Map<string, SessionRefs>()
 
 /**
- * Replace one session's live set with what the client just reported.
+ * Apply one push to one session's live set, honouring the reason it carries.
  *
- * A push that differs from the held set replaces it AND re-arms it, spent or not:
- * the client only ever reports refs that are in the draft now, so a different set
- * is a fresh attachment the user just made, and it may legitimately inject in the
- * same turn — attach, send, attach again is two sends in one turn only when the
- * second is steering, which is exactly the case this allows.
- * @param sessionId - the session whose draft changed.
- * @param refs - the live set, oldest first; an empty array clears the session.
+ * The four rules, and why each is what it is:
+ *
+ * - `live` REPLACES and re-arms, even when the set is identical to the held one.
+ *   That is what makes a re-attach after a send inject again: the client only
+ *   says `live` for a set that differs from the last one it reported, so an
+ *   identical set arriving as `live` is the user referencing the same file again
+ *   (the `/photos` path re-references an existing record, ref and all), not a
+ *   redundant render. It may legitimately inject in the same turn — attach, send,
+ *   attach again is two sends in one turn only when the second is steering, which
+ *   is exactly the case this allows.
+ * - `retry` is the client re-sending a set whose response was never confirmed.
+ *   An identical set keeps its spent flag: the client re-pushes on every composer
+ *   render, and a redundant push must not resurrect a spent set. A DIFFERENT set
+ *   still replaces, because the held set is then simply stale.
+ * - `sent` does NOT describe the set it carries; it says "my draft was committed,
+ *   so what you hold is still owed to the turn about to run". The held refs and
+ *   the spent flag are both left exactly as they were.
+ * - `removed` replaces, which for the empty set the client sends is a clear.
+ * @param sessionId - the session whose draft changed; an empty id is ignored before
+ * anything is recorded, since there is no session to record against.
+ * @param refs - the live set, oldest first; an empty array clears the session
+ * unless the reason says the send that emptied it is still owed (`sent`).
+ * @param reason - why the client is reporting it (see `RefPushReason`).
  */
-export function syncRefs(sessionId: string, refs: readonly PendingAttachment[]): void {
+export function syncRefs(
+  sessionId: string,
+  refs: readonly PendingAttachment[],
+  reason: RefPushReason,
+): void {
   if (sessionId === '') return
   const current = sessions.get(sessionId)
-  if (current !== undefined && sameRefs(current.refs, refs)) {
-    // An identical set keeps its spent flag: the client re-pushes on every
-    // composer render, and a redundant push must not resurrect a spent set.
-    current.refs = [...refs]
+  const held = current?.refs ?? []
+  const spent = current?.spent ?? false
+  const log = appendedLog(current?.log, refs.length, reason)
+
+  // The send: the client's draft was committed, so the set it reported before is
+  // the one the turn about to run must still be able to claim. Nothing about the
+  // held state changes — not the refs, not the spent flag — and the log records
+  // that this is why the set is still there.
+  if (reason === 'sent' && refs.length === 0) {
+    sessions.set(sessionId, { refs: [...held], spent, log })
     return
   }
-  sessions.set(sessionId, { refs: [...refs], spent: false })
+
+  if (reason === 'retry' && sameRefs(held, refs)) {
+    sessions.set(sessionId, { refs: [...refs], spent, log })
+    return
+  }
+
+  sessions.set(sessionId, { refs: [...refs], spent: false, log })
+}
+
+/** The log with one push appended, trimmed to the newest `PUSH_LOG_LIMIT`. */
+function appendedLog(
+  log: readonly RefPushRecord[] | undefined,
+  count: number,
+  reason: RefPushReason,
+): RefPushRecord[] {
+  const next = [...(log ?? []), { at: Date.now(), count, reason }]
+  return next.length > PUSH_LOG_LIMIT ? next.slice(next.length - PUSH_LOG_LIMIT) : next
+}
+
+/**
+ * Read one ref row's reason off the wire.
+ *
+ * An absent or unrecognized reason is an older client, and the default is
+ * deliberately the behaviour this store had before reasons existed: a non-empty
+ * set is re-asserted (an identical one keeps its spent flag, so a re-render
+ * cannot resurrect a spent set), an empty one clears. An old client therefore
+ * behaves exactly as it did, bug included, rather than acquiring a new one.
+ * @param value - the request's `reason` field.
+ * @param count - how many refs the push carried, which picks the default.
+ * @returns the reason to apply.
+ */
+export function parsePushReason(value: unknown, count: number): RefPushReason {
+  if (value === 'live' || value === 'retry' || value === 'sent' || value === 'removed') return value
+  return count > 0 ? 'retry' : 'removed'
 }
 
 /**
@@ -97,18 +186,33 @@ export function claimRefs(sessionId: string): PendingAttachment[] | undefined {
  * claimed it; a spent set says a step claimed it and the injection is in the
  * log. Without it, all three look identical from the chat window.
  *
+ * The `log` closes the last gap in that story (R31). `refs` alone cannot tell
+ * "the client pushed nothing" from "the client pushed an empty set" — the two
+ * look the same one request later, which is exactly how an afternoon went. The
+ * recorded pushes say which, and with which reason.
+ *
  * It reads the in-memory map and nothing else: no paths beyond what a push
  * already recorded, no mutation, and no effect on the one-shot guarantee — a
  * read neither spends a set nor re-arms one. An absent session is an empty,
- * unspent set rather than an error, because "the host holds nothing" is exactly
- * the answer a caller is usually asking for.
+ * unspent set with no pushes rather than an error, because "the host holds
+ * nothing" is exactly the answer a caller is usually asking for.
  * @param sessionId - the session to describe.
- * @returns the held set, oldest first, and whether it has been injected.
+ * @returns the held set, oldest first, whether it has been injected, and the pushes that produced it.
  */
-export function readRefs(sessionId: string): { refs: PendingAttachment[]; spent: boolean } {
+export function readRefs(sessionId: string): {
+  refs: PendingAttachment[]
+  spent: boolean
+  log: RefPushRecord[]
+} {
   const current = sessions.get(sessionId)
-  if (current === undefined) return { refs: [], spent: false }
-  return { refs: [...current.refs], spent: current.spent }
+  if (current === undefined) return { refs: [], spent: false, log: [] }
+  return {
+    refs: [...current.refs],
+    spent: current.spent,
+    // Fresh rows as well as a fresh array: the caller of a diagnostic must not be
+    // able to edit the record of what happened.
+    log: current.log.map(entry => ({ ...entry })),
+  }
 }
 
 /**

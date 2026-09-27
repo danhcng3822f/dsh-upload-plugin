@@ -113,10 +113,25 @@ describe('handleSyncRefs', () => {
     expect(claimRefs('s1')).toHaveLength(2)
   })
 
-  it('accepts an empty set, which is how a committed send clears the host', async () => {
+  it('accepts an empty set, which is how a removal clears the host', async () => {
     const result = await handleSyncRefs({ sessionId: 's1', refs: [] })
     expect(result).toEqual({ ok: true, count: 0 })
     expect(claimRefs('s1')).toBeUndefined()
+  })
+
+  // R31: an empty push that says it came from a send must NOT clear the held set —
+  // that is the bug this endpoint's reason field exists to fix.
+  it('keeps the held set for an empty push the client marked as a send', async () => {
+    await handleSyncRefs({
+      sessionId: 's1',
+      reason: 'live',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    const result = await handleSyncRefs({ sessionId: 's1', reason: 'sent', refs: [] })
+    expect(result).toEqual({ ok: true, count: 0 })
+    expect(claimRefs('s1')).toEqual([
+      { ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false },
+    ])
   })
 
   // A partially-recognized push still points the model at the attachments it can
@@ -166,18 +181,18 @@ describe('handleSyncRefs', () => {
 describe('handleReadRefs', () => {
   beforeEach(() => { clearRefs('s1') })
 
-  it('reports a session the host never heard of as empty and unspent', async () => {
-    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false })
+  it('reports a session the host never heard of as empty, unspent, with no pushes', async () => {
+    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false, log: [] })
   })
 
   // Echoing the id is what makes a mistyped query parameter visible: the caller
   // sees '' come back rather than reading "nothing held" as a client failure.
   it('echoes the session id it was asked about, empty when none was given', async () => {
-    expect(await handleReadRefs(undefined)).toEqual({ sessionId: '', refs: [], spent: false })
-    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false })
+    expect(await handleReadRefs(undefined)).toEqual({ sessionId: '', refs: [], spent: false, log: [] })
+    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false, log: [] })
   })
 
-  it('reports exactly what a push left held', async () => {
+  it('reports exactly what a push left held, and the push that left it', async () => {
     await handleSyncRefs({
       sessionId: 's1',
       refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
@@ -186,6 +201,9 @@ describe('handleReadRefs', () => {
       sessionId: 's1',
       refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
       spent: false,
+      // No reason on the wire is an older client, which this store treats as it
+      // always did: a non-empty set re-asserted.
+      log: [{ at: expect.any(Number), count: 1, reason: 'retry' }],
     })
   })
 
@@ -215,12 +233,40 @@ describe('handleReadRefs', () => {
 
   // The two halves must agree, or the diagnostic measures something other than
   // what the injection will do.
-  it('agrees with what a committed send cleared', async () => {
+  it('agrees with what a removal cleared', async () => {
     await handleSyncRefs({
       sessionId: 's1',
       refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
     })
-    await handleSyncRefs({ sessionId: 's1', refs: [] })
-    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false })
+    await handleSyncRefs({ sessionId: 's1', reason: 'removed', refs: [] })
+    expect(await handleReadRefs('s1')).toEqual({
+      sessionId: 's1',
+      refs: [],
+      spent: false,
+      log: [
+        { at: expect.any(Number), count: 1, reason: 'retry' },
+        { at: expect.any(Number), count: 0, reason: 'removed' },
+      ],
+    })
+  })
+
+  // And the diagnosis the log exists for: the send's empty push is visible as a
+  // push, with the reason that says it must not have cleared anything.
+  it('shows a send as an empty push that kept the held set', async () => {
+    await handleSyncRefs({
+      sessionId: 's1',
+      reason: 'live',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    await handleSyncRefs({ sessionId: 's1', reason: 'sent', refs: [] })
+    expect(await handleReadRefs('s1')).toEqual({
+      sessionId: 's1',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+      spent: false,
+      log: [
+        { at: expect.any(Number), count: 1, reason: 'live' },
+        { at: expect.any(Number), count: 0, reason: 'sent' },
+      ],
+    })
   })
 })

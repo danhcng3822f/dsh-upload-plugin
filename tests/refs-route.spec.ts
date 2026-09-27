@@ -98,6 +98,7 @@ describe('the refs route', () => {
   it('answers GET with the host\'s held state', async () => {
     await request('POST', REFS_PATH, {
       sessionId: 's1',
+      reason: 'live',
       refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
     })
 
@@ -108,13 +109,34 @@ describe('the refs route', () => {
       sessionId: 's1',
       refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
       spent: false,
+      // R31: the pushes that produced that state, so one GET says whether the
+      // client pushed nothing or pushed an empty set on purpose.
+      log: [{ at: expect.any(Number), count: 1, reason: 'live' }],
     })
   })
 
-  it('answers GET for a session that never pushed with an empty set', async () => {
+  it('answers GET for a session that never pushed with an empty set and no log', async () => {
     const res = await request('GET', `${REFS_PATH}?sessionId=never`)
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ sessionId: 'never', refs: [], spent: false })
+    expect(res.json()).toEqual({ sessionId: 'never', refs: [], spent: false, log: [] })
+  })
+
+  // The whole point of the log: after a send, the two empty-push causes look
+  // identical in `refs` and are told apart here.
+  it('records the reason of each push on the way through the route', async () => {
+    await request('POST', REFS_PATH, {
+      sessionId: 's1',
+      reason: 'live',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    await request('POST', REFS_PATH, { sessionId: 's1', reason: 'sent', refs: [] })
+
+    const body = (await request('GET', `${REFS_PATH}?sessionId=s1`)).json()
+    expect(body.refs).toHaveLength(1)
+    expect(body.log).toEqual([
+      { at: expect.any(Number), count: 1, reason: 'live' },
+      { at: expect.any(Number), count: 0, reason: 'sent' },
+    ])
   })
 
   it('leaves the POST answer byte-for-byte as the client depends on it', async () => {
