@@ -162,7 +162,7 @@ from a client-owned vocabulary.
 `{ name, id, order, label: () => t('nav'), inject }` and reads/writes through
 `connection.api` / `ctx.remote` (settings document wire API, with a
 `settings/document-updated` push event). Settings documents live at
-`C:\Users\Admin\.dsh\web-search.json` (path configured in the profile patch).
+`~/.dsh/web-search.json` (path configured in the profile patch).
 
 ---
 

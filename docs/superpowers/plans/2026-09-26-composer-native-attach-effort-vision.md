@@ -1808,7 +1808,7 @@ Expected: `tsc` clean.
 
 - [ ] **Step 4: Manual check**
 
-Open Settings → Vision. Toggling a model writes `input: ["text","image"]` into `C:\Users\Admin\.dsh\web-search.json` and the checkbox reflects the stored value after reload. Toggling off removes the key. Every other field of the row is unchanged.
+Open Settings → Vision. Toggling a model writes `input: ["text","image"]` into `~/.dsh/web-search.json` and the checkbox reflects the stored value after reload. Toggling off removes the key. Every other field of the row is unchanged.
 
 - [ ] **Step 5: Commit**
 
