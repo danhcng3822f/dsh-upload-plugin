@@ -1,7 +1,10 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, normalize, relative, resolve } from 'node:path'
-import type { FileUploadResponse, UploadedFileInfo, UploadListResponse, VisionCheckResponse } from '../types.js'
+import type {
+  FileUploadResponse, SyncRefsResponse, UploadedFileInfo, UploadListResponse, VisionCheckResponse,
+} from '../types.js'
 import { isSupportedPhotoExtension, resolveUniqueUploadPath } from './file-utils.js'
+import { parsePendingAttachment, syncRefs } from './refs-store.js'
 
 export async function handleCheckVision(
   llm: any,
@@ -114,6 +117,46 @@ export async function handleListUploads(
     return { ok: true, files }
   } catch (err: any) {
     return { ok: false, files: [], error: err?.message ?? 'Failed to list uploads' }
+  }
+}
+
+/**
+ * Record which attachments are live in one session's draft (R25-B2).
+ *
+ * The client is the only side that knows this — the chips live in its composer
+ * draft — so it pushes the set here whenever it changes, and the
+ * `agent/pre-step` injection claims it on the next turn
+ * (`src/host/context-injection.ts`).
+ *
+ * The body is untrusted by shape even though it comes from this plugin's own
+ * client: a malformed row would otherwise reach `instructionFor` and render
+ * `undefined` into the model's context. Rows that do not validate are dropped
+ * rather than failing the whole push, because a partially-recognized set still
+ * points the model at the attachments it can name, while a rejected push would
+ * silently lose all of them.
+ * @param payload - the parsed request body.
+ * @returns the outcome, with the count the host now holds for the session.
+ */
+export async function handleSyncRefs(payload: unknown): Promise<SyncRefsResponse> {
+  try {
+    if (typeof payload !== 'object' || payload === null) {
+      return { ok: false, count: 0, error: 'Invalid request payload' }
+    }
+    const body = payload as Record<string, unknown>
+    const sessionId = body['sessionId']
+    if (typeof sessionId !== 'string' || sessionId === '') {
+      return { ok: false, count: 0, error: 'Missing sessionId' }
+    }
+    const raw = body['refs']
+    if (!Array.isArray(raw)) {
+      return { ok: false, count: 0, error: 'Missing refs array' }
+    }
+
+    const refs = raw.map(parsePendingAttachment).filter(record => record !== undefined)
+    syncRefs(sessionId, refs)
+    return { ok: true, count: refs.length }
+  } catch (err: any) {
+    return { ok: false, count: 0, error: err?.message ?? 'Failed to sync refs' }
   }
 }
 

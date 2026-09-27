@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import type { InputActions, InputState } from '@deepseek-ai/dsh-client-ui-conversation'
 import type { AttachmentStore } from './attachment-store.js'
-import { activeTokens, VISION_SOURCE, type AttachmentRecord, type ChipOccurrence } from './attachments.js'
+import { VISION_SOURCE, type AttachmentRecord, type ChipOccurrence } from './attachments.js'
+import { liveRecords, syncActiveRefs } from './ref-sync.js'
 import { formatFileSize } from './uploader.js'
 
 /** The placeholder one chip occupies in the draft; an occurrence covers exactly `[offset, offset + 1)`. */
@@ -413,18 +414,15 @@ export function openImageLightbox(imageUrl: string, title: string): void {
 /**
  * The records whose chip is in this draft right now — the rail's whole content.
  *
- * `activeTokens` answers which refs are live (and drops chips whose record this
- * store never had); `store.byRef` then resolves each one, so a chip whose record
- * is gone renders nothing rather than a card with nothing behind it.
+ * The derivation itself lives in `./ref-sync.js` (`liveRecords`), because R25-B2
+ * pushes exactly this set to the host for the context injection. One function for
+ * both readers: a card on the rail and a ref the model is told about cannot
+ * disagree. This wrapper only supplies the bound store and refuses the empty
+ * session, which is the rail's own guard.
  */
 function activeRecords(snapshot: RailSnapshot): AttachmentRecord[] {
   if (store === undefined || snapshot.sessionId === '') return []
-  const out: AttachmentRecord[] = []
-  for (const ref of activeTokens(snapshot.occurrences, store.list(snapshot.sessionId))) {
-    const record = store.byRef(ref)
-    if (record !== undefined) out.push(record)
-  }
-  return out
+  return liveRecords(snapshot.occurrences, store.list(snapshot.sessionId), ref => store?.byRef(ref))
 }
 
 /**
@@ -434,6 +432,12 @@ function activeRecords(snapshot: RailSnapshot): AttachmentRecord[] {
  * The rail shows only what the draft currently references, so a sent message
  * empties it and a chip removed from the draft takes its card with it — no
  * plugin-side list, and therefore nothing to go stale between sends.
+ *
+ * R25-B2 hangs the host sync off this same entry point: it is called from the
+ * rail entry's effect, which already runs on every composer render, so the push
+ * follows the live draft with no second observation path. It sits BEFORE the
+ * signature guard below on purpose — that guard skips the DOM rebuild when the
+ * cards already match, and a push must not be skipped with it.
  * @param snapshot - the session on screen and its draft's chip occurrences.
  */
 export function renderAttachmentBar(snapshot: RailSnapshot): void {
@@ -442,6 +446,11 @@ export function renderAttachmentBar(snapshot: RailSnapshot): void {
   if (snapshot.sessionId !== '') lastActiveSessionId = snapshot.sessionId
 
   const attachments = activeRecords(snapshot)
+
+  // The host cannot see this draft, so the live set is pushed from the one place
+  // that already knows it. De-duplicated inside `syncActiveRefs`, since this runs
+  // once per keystroke.
+  syncActiveRefs(snapshot.sessionId, attachments)
 
   const containerId = 'dsh-vision-attachments-rail'
   const container = document.getElementById(containerId)

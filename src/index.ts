@@ -1,6 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { handleCheckVision, handleListUploads, handleUpload, handleViewFile } from './host/endpoints.js'
+import {
+  handleCheckVision, handleListUploads, handleSyncRefs, handleUpload, handleViewFile,
+} from './host/endpoints.js'
+import { registerContextInjection } from './host/context-injection.js'
 
 export const name = 'dsh-upload-plugin'
 
@@ -27,6 +30,14 @@ function resolveWorkspace(ctx: Context, sessionId?: string, explicitWs?: string)
 }
 
 export function apply(ctx: Context): void {
+  // R25-B2 — the context injection, registered OUTSIDE the webServer injection
+  // below on purpose. It does not need an HTTP server: it needs the agent loop,
+  // which is always composed. Nesting it under `inject(['webServer'])` would make
+  // the whole feature vanish in a headless deployment that has no web server but
+  // still has agents — the injection is the model-facing half of an attachment,
+  // so its absence would silently lose the instruction rather than degrade.
+  registerContextInjection(ctx)
+
   // Inject webServer route if webServer is available
   ctx.inject(['webServer'], (scoped: Context) => {
     const webServer = scoped.get('webServer') as any
@@ -142,6 +153,43 @@ export function apply(ctx: Context): void {
           'Cache-Control': 'no-cache',
         })
         res.end(result.buffer)
+      },
+    })
+
+    // 5. Endpoint: Sync the session's live attachment refs (R25-B2)
+    //
+    // The transport the brief asked for rather than a new one: the same
+    // `webServer.register` surface as the four above. The client pushes here
+    // whenever its live set changes — a chip minted, a chip removed by the rail's
+    // ✕, or a committed send that empties the draft — and the pre-step injection
+    // claims the set on the next turn. It is a POST because it mutates host state;
+    // the answer carries the count so the client can tell a dropped push from an
+    // accepted one.
+    webServer.register({
+      kind: 'exact',
+      path: '/api/vision-plugin/refs',
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, count: 0, error: 'Method Not Allowed' }))
+          return
+        }
+
+        let body = ''
+        req.on('data', chunk => { body += chunk })
+        req.on('end', async () => {
+          let payload: unknown
+          try {
+            payload = JSON.parse(body)
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, count: 0, error: 'Invalid JSON body' }))
+            return
+          }
+          const result = await handleSyncRefs(payload)
+          res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(result))
+        })
       },
     })
   })

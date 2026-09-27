@@ -1,7 +1,25 @@
-import type { FileUploadResponse, UploadListResponse, VisionCheckResponse } from '../types.js';
+import type { FileUploadResponse, SyncRefsResponse, UploadListResponse, VisionCheckResponse } from '../types.js';
 export declare function handleCheckVision(llm: any, provider?: string, model?: string): Promise<VisionCheckResponse>;
 export declare function handleUpload(workspaceDir: string, originalName: string, base64Data: string, isPhoto: boolean, sessionId?: string): Promise<FileUploadResponse>;
 export declare function handleListUploads(workspaceDir: string, sessionId?: string): Promise<UploadListResponse>;
+/**
+ * Record which attachments are live in one session's draft (R25-B2).
+ *
+ * The client is the only side that knows this — the chips live in its composer
+ * draft — so it pushes the set here whenever it changes, and the
+ * `agent/pre-step` injection claims it on the next turn
+ * (`src/host/context-injection.ts`).
+ *
+ * The body is untrusted by shape even though it comes from this plugin's own
+ * client: a malformed row would otherwise reach `instructionFor` and render
+ * `undefined` into the model's context. Rows that do not validate are dropped
+ * rather than failing the whole push, because a partially-recognized set still
+ * points the model at the attachments it can name, while a rejected push would
+ * silently lose all of them.
+ * @param payload - the parsed request body.
+ * @returns the outcome, with the count the host now holds for the session.
+ */
+export declare function handleSyncRefs(payload: unknown): Promise<SyncRefsResponse>;
 export declare function handleViewFile(workspaceDir: string, relFile: string): Promise<{
     found: boolean;
     buffer?: Buffer;

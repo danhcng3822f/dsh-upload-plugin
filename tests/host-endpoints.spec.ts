@@ -1,5 +1,8 @@
-import { describe, it, expect, vi } from 'vitest'
-import { handleCheckVision, handleListUploads, handleUpload, handleViewFile } from '../src/host/endpoints.ts'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import {
+  handleCheckVision, handleListUploads, handleSyncRefs, handleUpload, handleViewFile,
+} from '../src/host/endpoints.ts'
+import { claimRefs, clearRefs } from '../src/host/refs-store.ts'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -92,5 +95,65 @@ describe('host endpoints', () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('handleSyncRefs', () => {
+  beforeEach(() => { clearRefs('s1') })
+
+  it('records a valid push and reports the count', async () => {
+    const result = await handleSyncRefs({
+      sessionId: 's1',
+      refs: [
+        { ref: 'a', relativePath: 'uploads/s/a.png', isPhoto: true },
+        { ref: 'b', relativePath: 'uploads/s/b.txt', isPhoto: false },
+      ],
+    })
+    expect(result).toEqual({ ok: true, count: 2 })
+    expect(claimRefs('s1')).toHaveLength(2)
+  })
+
+  it('accepts an empty set, which is how a committed send clears the host', async () => {
+    const result = await handleSyncRefs({ sessionId: 's1', refs: [] })
+    expect(result).toEqual({ ok: true, count: 0 })
+    expect(claimRefs('s1')).toBeUndefined()
+  })
+
+  // A partially-recognized push still points the model at the attachments it can
+  // name. Rejecting the whole push would silently lose all of them, which is the
+  // worse failure for a set the user can see on the rail.
+  it('drops malformed rows but keeps the usable ones', async () => {
+    const result = await handleSyncRefs({
+      sessionId: 's1',
+      refs: [
+        { ref: 'a', relativePath: 'uploads/s/a.png', isPhoto: true },
+        { ref: '', relativePath: 'x', isPhoto: true },
+        { nope: true },
+        null,
+      ],
+    })
+    expect(result).toEqual({ ok: true, count: 1 })
+    expect(claimRefs('s1')).toEqual([
+      { ref: 'a', relativePath: 'uploads/s/a.png', isPhoto: true },
+    ])
+  })
+
+  it.each([
+    ['a non-object body', 42],
+    ['null', null],
+    ['a missing sessionId', { refs: [] }],
+    ['an empty sessionId', { sessionId: '', refs: [] }],
+    ['a missing refs array', { sessionId: 's1' }],
+    ['a non-array refs', { sessionId: 's1', refs: 'nope' }],
+  ])('refuses %s', async (_label, payload) => {
+    const result = await handleSyncRefs(payload)
+    expect(result.ok).toBe(false)
+    expect(result.count).toBe(0)
+    expect(result.error).toBeDefined()
+  })
+
+  it('refuses without recording anything', async () => {
+    await handleSyncRefs({ sessionId: 's1', refs: 'nope' })
+    expect(claimRefs('s1')).toBeUndefined()
   })
 })

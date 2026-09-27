@@ -82,6 +82,12 @@ export declare function openImageLightbox(imageUrl: string, title: string): void
  * The rail shows only what the draft currently references, so a sent message
  * empties it and a chip removed from the draft takes its card with it — no
  * plugin-side list, and therefore nothing to go stale between sends.
+ *
+ * R25-B2 hangs the host sync off this same entry point: it is called from the
+ * rail entry's effect, which already runs on every composer render, so the push
+ * follows the live draft with no second observation path. It sits BEFORE the
+ * signature guard below on purpose — that guard skips the DOM rebuild when the
+ * cards already match, and a push must not be skipped with it.
  * @param snapshot - the session on screen and its draft's chip occurrences.
  */
 export declare function renderAttachmentBar(snapshot: RailSnapshot): void;

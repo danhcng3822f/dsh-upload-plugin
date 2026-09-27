@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createVisionSource, mintChip, nextChipCursor } from '../src/client/reference.js'
+import { createVisionSource, mintChip, nextChipCursor, ZERO_WIDTH_PLACEHOLDER } from '../src/client/reference.js'
 import { AttachmentStore } from '../src/client/attachment-store.js'
 import { makeRef } from '../src/client/attachments.js'
 
@@ -38,17 +38,39 @@ describe('createVisionSource', () => {
     expect(outcome.insert.clipboardText).toBe('@a.png')
   })
 
-  it('serializes a photo ref into the read_image instruction', async () => {
+  // R25-B2 replaced the instruction text with a zero-width space. The point of
+  // these three assertions is the TRAP, not the character: the harness silently
+  // drops a message with no text and no images
+  // (`ui-conversation/src/client/input/hub.ts:155`), so a codec that returned ''
+  // would turn "attach a file, press Enter" into a dead button — nothing sent, no
+  // error, no notice, draft not even cleared.
+  it('serializes a chip to a single zero-width space, never to prose', async () => {
     const source = createVisionSource(storeWith('s1', 'a.png'))
     const text = await source.codec.serialize(makeRef('abc12345', 'a.png'), new AbortController().signal)
-    expect(text).toContain('read_image')
-    expect(text).toContain('uploads/s1/a.png')
+    expect(text).toBe(ZERO_WIDTH_PLACEHOLDER)
+    expect(text).not.toContain('read_image')
+    expect(text).not.toContain('uploads/')
   })
 
-  it('serializes a file ref into the read instruction', async () => {
+  it('serializes a file chip the same way — the tool choice moved to the host', async () => {
     const source = createVisionSource(storeWith('s1', 'n.txt', false))
     const text = await source.codec.serialize(makeRef('abc12345', 'n.txt'), new AbortController().signal)
-    expect(text).toContain('`read`')
+    expect(text).toBe(ZERO_WIDTH_PLACEHOLDER)
+    expect(text).not.toContain('`read`')
+  })
+
+  // The whole reason the placeholder is U+200B and not a space. The harness passes
+  // the spliced prompt through `out.trim()` before handing it to the sink
+  // (`ui-conversation/src/client/input/facade.ts:440`), and `trim` strips
+  // WhiteSpace and LineTerminator code points. U+200B is category Cf, not Zs, so it
+  // survives — a file-only send stays non-empty and reaches the server.
+  it('returns a placeholder that survives the harness trim()', async () => {
+    const source = createVisionSource(storeWith('s1', 'a.png'))
+    const text = await source.codec.serialize(makeRef('abc12345', 'a.png'), new AbortController().signal)
+    expect(text.trim()).toBe(text)
+    expect(text.trim().length).toBe(1)
+    // And the contrast that makes the check meaningful: a space does NOT survive.
+    expect(' '.trim()).toBe('')
   })
 
   it('rejects an unknown ref so the send blocks instead of silently degrading', async () => {

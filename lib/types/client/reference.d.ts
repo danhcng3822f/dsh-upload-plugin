@@ -35,12 +35,23 @@ export interface VisionSource {
     };
 }
 /**
+ * What the codec substitutes for a chip: one zero-width space.
+ *
+ * Exported so the spec can assert the exact character and its survival through
+ * the harness's `trim()`, rather than restating the literal and drifting from it.
+ * See the codec's `serialize` for why it must be non-empty and why this character
+ * in particular.
+ */
+export declare const ZERO_WIDTH_PLACEHOLDER = "\u200B";
+/**
  * The plugin's reference source.
  *
  * The draft holds one U+FFFC chip per inserted reference; the chip carries this
  * source's name and the record's ref. At submit the facade calls `codec.serialize`
- * once per chip and splices the result into the prompt — that is the only place
- * the instruction text ever exists.
+ * once per chip and splices the result into the prompt. As of R25-B2 that result
+ * is a zero-width space, not prose: the instruction travels as a host-side context
+ * injection instead, and this codec's remaining jobs are resolving the ref (so an
+ * unknown one blocks the send) and keeping a file-only message non-empty.
  */
 export declare function createVisionSource(store: AttachmentStore): VisionSource;
 /**
