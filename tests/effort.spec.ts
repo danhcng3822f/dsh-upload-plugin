@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { CUSTOM_EFFORT_KEY, effortChoices, effortLabel } from '../src/client/effort.js'
+import {
+  CUSTOM_EFFORT_KEY,
+  effortChoices,
+  effortLabel,
+  isThinkingLevel,
+  THINKING_LEVEL_NAMES,
+  THINKING_LEVELS,
+} from '../src/client/effort.js'
 
 describe('effortChoices', () => {
   it('lists the model-declared efforts in host order, then Custom', () => {
@@ -66,5 +73,31 @@ describe('effortLabel', () => {
 
   it('returns undefined when no effort is effective', () => {
     expect(effortLabel({ efforts: [{ id: 'high', name: 'High' }] }, undefined)).toBeUndefined()
+  })
+})
+
+describe('the level vocabulary a Custom value is checked against', () => {
+  it('is exactly pi-ai’s seven level names, in escalation order', () => {
+    // Copied from `llm-pi-ai/src/catalog.ts:69-77`, which the profile schema
+    // validates the declaration's keys against (`config.ts:203-206`). A drift
+    // here is a value Custom accepts and the settings write then rejects.
+    expect(THINKING_LEVELS).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('accepts every level name', () => {
+    for (const level of THINKING_LEVELS) expect(isThinkingLevel(level)).toBe(true)
+  })
+
+  it('refuses everything that is not a level name', () => {
+    // The values a user is most likely to try instead: a token budget, a
+    // provider's own spelling, a case variant, and the empty string.
+    for (const value of ['8192', 'none', 'High', 'very-high', '', ' high', 'thinking']) {
+      expect(isThinkingLevel(value)).toBe(false)
+    }
+  })
+
+  it('spells the accepted levels for the notice, without a second list', () => {
+    expect(THINKING_LEVEL_NAMES).toBe(THINKING_LEVELS.join(', '))
+    for (const level of THINKING_LEVELS) expect(THINKING_LEVEL_NAMES).toContain(level)
   })
 })

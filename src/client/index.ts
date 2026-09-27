@@ -6,7 +6,8 @@ import { AttachButtons } from './composer/attach-buttons.js'
 import { EffortControl } from './composer/effort-control.js'
 import { registerVisionCommands } from './commands.js'
 import { createVisionSource, type VisionSource } from './reference.js'
-import { VisionSection, NAMESPACE as VISION_NAMESPACE, type VisionSectionProps } from './settings/vision-section.js'
+import { VisionSection, type VisionSectionProps } from './settings/vision-section.js'
+import { SETTINGS_NAMESPACE } from './settings/document.js'
 
 export const name = 'dsh-upload-plugin-client'
 
@@ -93,10 +94,17 @@ export function apply(ctx: Context): void {
   // this registers into `conversation.input.right` beside the attach buttons and
   // the rail — which places the effort control to the LEFT of the model seat.
   // That position is the accepted cost of getting the shipped selector back.
-  ctx.inject(['slots', 'sessions', 'modelDirectories'], (scoped: Context) => {
+  //
+  // R28 — the Custom… row declares a level the model does not offer yet, so this
+  // registration also needs `connection`: the write goes through the same
+  // `connection.api.settings` the settings page is handed, and through no other
+  // seam. It is the connection's own stable `api`, which is what the control's
+  // handlers close over.
+  ctx.inject(['slots', 'sessions', 'modelDirectories', 'connection'], (scoped: Context) => {
     const slots = scoped.get('slots') as any
     const sessions = scoped.get('sessions') as any
     const directories = scoped.get('modelDirectories') as any
+    const connection = scoped.get('connection') as any
     slots.inject('conversation.input.right', () => slots.register({
       name: 'conversation.input.right',
       id: 'vision-effort',
@@ -116,6 +124,7 @@ export function apply(ctx: Context): void {
           load: () => { if (available) directory.load().catch(() => {}) },
           select: (selection: { provider: string; model: string; reasoningEffort?: string }) =>
             available ? directory.select(selection).then(() => true, () => false) : Promise.resolve(false),
+          settings: connection.api.settings,
           onError: (message: string) => { console.warn('[dsh-upload-plugin] effort control:', message) },
         }
       },
@@ -149,7 +158,7 @@ export function apply(ctx: Context): void {
     const reloaders = new Set<() => void>()
     scoped.effect(() => {
       const dispose = remote.$on('settings/document-updated', (ns) => {
-        if (ns !== VISION_NAMESPACE) return
+        if (ns !== SETTINGS_NAMESPACE) return
         for (const reload of reloaders) reload()
       })
       return () => { dispose(); reloaders.clear() }

@@ -6,101 +6,17 @@
  * serves images. The shipped Models page owns provider topology; this page owns
  * exactly one field of one row and preserves everything else.
  *
- * Wire shape, read out of the harness rather than assumed. The read is
- * `settings.describe({})`, whose `result.value` carries `writable` plus one
- * redacted view per namespace; the write is
- * `settings.mutate({ ns, ops, expectedRevision })` — the path-addressed edit the
- * shipped Models page itself uses for profile changes
- * (`ui-settings-models/src/client/CustomProviderCard.tsx:147`), typed in
- * `host/apiproxy/src/fetch/client.ts:152` and served at
- * `host/apiproxy/src/fetch/handler.ts:136`. There is no
- * `settings.read(ns)`/`settings.write(ns, value)` verb.
- *
- * The one op writes a whole provider's `models` array rather than a path inside
- * one row, because `applyPathOp` (`settings/settings/src/index.ts:205`) treats
- * any non-plain-object child as a leaf: an index path such as
- * `providers.<id>.models.0.input` walks into the ARRAY, finds it is not a plain
- * object, and replaces it with an object keyed by `"0"`. `models` is the
- * deepest addressable node.
+ * The wire envelope, the namespace and the provider-row read come from
+ * `./document.js`, which the composer's effort control edits the same document
+ * through; the path-addressed edit both use is documented there.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { hasVision, setVision, type ModelRow } from '../vision-setting.js'
-
-/** The settings namespace holding pi-ai provider profiles. */
-export const NAMESPACE = 'llm-pi-ai'
-
-/**
- * Human text for a rejected wire call. A transport failure rejects with an
- * `Error`; a host or a runtime can reject with anything, and the page still has
- * to say something. (Same helper as the shipped Models store.)
- * @param error - the rejection value.
- * @returns the message to show.
- */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-/**
- * The `result` envelope every wire call answers with: a business rejection is a
- * resolved value, not a thrown error, so both branches are checked.
- */
-type WireResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: { code: string; message: string } }
-
-/** One settings namespace's redacted view, as `settings.describe` reports it. */
-interface NamespaceView {
-  ns: string
-  value: unknown
-  revision: number
-}
-
-/** One path-addressed edit of `settings.mutate`. */
-type SettingsPathOp =
-  | { op: 'set'; path: readonly string[]; value: unknown }
-  | { op: 'unset'; path: readonly string[] }
-
-/** `settings.describe` value: the writability flag plus every exposed namespace. */
-interface DescribeValue {
-  writable: boolean
-  namespaces: NamespaceView[]
-}
-
-/** `settings.mutate` value: the namespace's new view; only `result.ok` is read here. */
-interface MutateValue {
-  ns: string
-  revision: number
-}
+import { messageOf, readProviders, SETTINGS_NAMESPACE, type ProviderRow, type SettingsApi } from './document.js'
 
 /** The subset of the connection's wire face this page calls. */
 export interface VisionSectionApi {
-  settings: {
-    describe(payload: Record<string, never>): Promise<{ result: WireResult<DescribeValue> }>
-    mutate(payload: {
-      ns: string
-      ops: readonly SettingsPathOp[]
-      expectedRevision?: number
-    }): Promise<{ result: WireResult<MutateValue> }>
-  }
-}
-
-/** One provider profile the page renders. */
-interface ProviderRow {
-  id: string
-  displayName: string | undefined
-  models: ModelRow[]
-}
-
-/**
- * The document is hand-editable, so a model entry is only trusted to be an
- * object. This predicate deliberately does NOT claim an `id`: `ModelRow.id` is
- * required by the type and enforced by nothing at runtime, which is what
- * {@link isAddressable} exists for.
- * @param row - one entry of a profile's `models` array.
- * @returns whether the entry is an object this page can read fields from.
- */
-function isRowObject(row: unknown): row is ModelRow {
-  return typeof row === 'object' && row !== null && !Array.isArray(row)
+  settings: SettingsApi
 }
 
 /**
@@ -112,29 +28,6 @@ function isRowObject(row: unknown): row is ModelRow {
  */
 function isAddressable(row: ModelRow): boolean {
   return typeof row.id === 'string' && row.id.length > 0
-}
-
-/**
- * Read the provider dict out of a namespace value, keeping each profile's own
- * fields untouched: the page renders `displayName` and `models` and passes the
- * rows to `setVision` verbatim, so nothing here normalizes or drops a field.
- * @param value - the namespace's resolved value (`Config` of `llm-pi-ai`).
- * @returns one row per declared provider, or an empty list when none are.
- */
-function readProviders(value: unknown): ProviderRow[] {
-  if (typeof value !== 'object' || value === null) return []
-  const providers = (value as { providers?: unknown }).providers
-  if (typeof providers !== 'object' || providers === null || Array.isArray(providers)) return []
-  return Object.entries(providers as Record<string, unknown>).map(([id, profile]) => {
-    const fields = typeof profile === 'object' && profile !== null && !Array.isArray(profile)
-      ? profile as { displayName?: unknown; models?: unknown }
-      : {}
-    return {
-      id,
-      displayName: typeof fields.displayName === 'string' ? fields.displayName : undefined,
-      models: Array.isArray(fields.models) ? fields.models.filter(isRowObject) : [],
-    }
-  })
 }
 
 export interface VisionSectionProps {
@@ -182,11 +75,11 @@ export function VisionSection({ api, onDocumentUpdated }: VisionSectionProps) {
         setLoadError(response.result.error.message)
         return
       }
-      const view = response.result.value.namespaces.find(candidate => candidate.ns === NAMESPACE)
+      const view = response.result.value.namespaces.find(candidate => candidate.ns === SETTINGS_NAMESPACE)
       if (view === undefined) {
         setProviders([])
         setWritable(false)
-        setLoadError(`Không tìm thấy namespace "${NAMESPACE}"`)
+        setLoadError(`Không tìm thấy namespace "${SETTINGS_NAMESPACE}"`)
         return
       }
       setProviders(readProviders(view.value))
@@ -241,16 +134,16 @@ export function VisionSection({ api, onDocumentUpdated }: VisionSectionProps) {
         setWriteError(described.result.error.message)
         return
       }
-      const view = described.result.value.namespaces.find(candidate => candidate.ns === NAMESPACE)
+      const view = described.result.value.namespaces.find(candidate => candidate.ns === SETTINGS_NAMESPACE)
       const provider = view === undefined
         ? undefined
         : readProviders(view.value).find(row => row.id === providerId)
       if (view === undefined || provider === undefined) {
-        setWriteError(`Không tìm thấy provider "${providerId}" trong "${NAMESPACE}"`)
+        setWriteError(`Không tìm thấy provider "${providerId}" trong "${SETTINGS_NAMESPACE}"`)
         return
       }
       const response = await api.settings.mutate({
-        ns: NAMESPACE,
+        ns: SETTINGS_NAMESPACE,
         ops: [{
           op: 'set',
           path: ['providers', providerId, 'models'],
@@ -294,7 +187,7 @@ export function VisionSection({ api, onDocumentUpdated }: VisionSectionProps) {
       <p>Bật/tắt khả năng đọc ảnh cho từng model. Bật sẽ khai báo <code>input: [&quot;text&quot;,&quot;image&quot;]</code>.</p>
       {loading && <p>Đang tải…</p>}
       {!loading && !writable && <p>Cấu hình hiện chỉ cho đọc nên không lưu được thay đổi.</p>}
-      {!loading && total === 0 && <p>Chưa có provider nào khai báo model trong <code>{NAMESPACE}</code>.</p>}
+      {!loading && total === 0 && <p>Chưa có provider nào khai báo model trong <code>{SETTINGS_NAMESPACE}</code>.</p>}
       {/* A write failure names the write. It sits above the list it failed to
           change, and the list stays mounted so the user can see which row and
           click it again. */}
