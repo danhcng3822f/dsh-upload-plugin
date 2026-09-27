@@ -94,6 +94,37 @@ function fakeCtx() {
 
 const enter = (messages: any[] = []) => async () => ({ kind: 'enter', messages })
 
+/** The user's own input, as the harness mints it (`acp/src/index.ts:385`). */
+const userMessage = (text = 'look at this') => ({
+  id: `u-${text}`, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' },
+})
+
+/** Some other pre-step listener's contribution: same shape, different source kind. */
+const pluginMessage = (text = 'runtime context') => ({
+  id: `p-${text}`, role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'other' },
+})
+
+/**
+ * One `agent/pre-step` dispatch.
+ *
+ * `claimed` is the payload's `messages` — the batch the loop removed from the
+ * inbox for THIS step (`runtime-types.ts:224`) — and `entering` is what `next()`
+ * resolves to, which is a different list as soon as any downstream listener
+ * appends to it.
+ */
+function step(claimed: any[], entering: any[] = claimed) {
+  return {
+    payload: {
+      agent: { session: { id: 's1' } },
+      messages: claimed,
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    },
+    next: enter(entering),
+  }
+}
+
 describe('registerContextInjection', () => {
   it('registers both the pre-step and the disposal listener', () => {
     const ctx = fakeCtx()
@@ -102,28 +133,84 @@ describe('registerContextInjection', () => {
     expect(ctx.get('session/disposed')).toBeTypeOf('function')
   })
 
-  it('appends one context message when the session has refs', async () => {
+  it('appends one context message on the step that carries the user\'s own message', async () => {
     const ctx = fakeCtx()
     registerContextInjection(ctx as never)
     syncRefs('s1', [photo()])
 
-    const decision = await ctx.get('agent/pre-step')!(
-      { agent: { session: { id: 's1' } }, turn: 1, signal: new AbortController().signal },
-      enter([]),
-    )
+    const { payload, next } = step([userMessage()])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
     expect(decision.kind).toBe('enter')
+    expect(decision.messages).toHaveLength(2)
+    expect(decision.messages[0].source.kind).toBe('user')
+    expect(decision.messages[1].source.kind).toBe(VISION_ATTACHMENT_KIND)
+  })
+
+  // THE bug this rule fixes. `interception.spec.ts:103-106` pins the shape of a
+  // turn that calls a tool: step 1 claims `messages: 1` (the prompt), step 2
+  // claims `messages: 0`. A continuation step carries no user input at all, so it
+  // must not spend a set the user's own message has not been answered with yet.
+  it('does not claim on a continuation step of a turn', async () => {
+    const ctx = fakeCtx()
+    registerContextInjection(ctx as never)
+    syncRefs('s1', [photo()])
+
+    const { payload, next } = step([])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
+    expect(decision.messages).toHaveLength(0)
+    // Untouched, so the turn that DOES carry the user's message still injects.
+    expect(claimRefs('s1')).toEqual([photo()])
+  })
+
+  it('does not claim on a step carrying only another listener\'s context', async () => {
+    const ctx = fakeCtx()
+    registerContextInjection(ctx as never)
+    syncRefs('s1', [photo()])
+
+    const { payload, next } = step([pluginMessage()])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
     expect(decision.messages).toHaveLength(1)
-    expect(decision.messages[0].source.kind).toBe(VISION_ATTACHMENT_KIND)
+    expect(claimRefs('s1')).toEqual([photo()])
+  })
+
+  // A steer is the user's own input delivered mid-turn (`agent.ts:126-128` sends
+  // it to `next-step`), so the step that consumes it is a step the attachment
+  // belongs to. `interception.spec.ts:257-316` pins that shape: the steer is
+  // claimed by the turn's SECOND step.
+  it('claims on a continuation step that carries a steered message', async () => {
+    const ctx = fakeCtx()
+    registerContextInjection(ctx as never)
+    syncRefs('s1', [photo()])
+
+    const { payload, next } = step([userMessage('change of plans')])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
+    expect(decision.messages).toHaveLength(2)
+    expect(decision.messages[1].source.kind).toBe(VISION_ATTACHMENT_KIND)
+  })
+
+  // The detector is the CLAIMED batch, not the decision's own list. Any
+  // downstream listener may append to `decision.messages` after the user's
+  // message — `time-context` does it on every step, and the loop's own default
+  // appends a runtime-context snapshot (`agent.ts:236-239`) — so "the last
+  // message is the user's" would silently stop injecting. This test fails under
+  // that rule and passes under the claimed-batch rule.
+  it('claims even when a downstream listener appended after the user\'s message', async () => {
+    const ctx = fakeCtx()
+    registerContextInjection(ctx as never)
+    syncRefs('s1', [photo()])
+
+    const { payload, next } = step([userMessage()], [userMessage(), pluginMessage()])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
+    expect(decision.messages.at(-1)?.source.kind).toBe(VISION_ATTACHMENT_KIND)
+    expect(decision.messages.at(-2)?.source.kind).toBe('plugin')
   })
 
   it('leaves the decision untouched when the session has no refs', async () => {
     const ctx = fakeCtx()
     registerContextInjection(ctx as never)
-    const existing = { id: 'x', role: 'user', content: [], source: { kind: 'user' } }
-    const decision = await ctx.get('agent/pre-step')!(
-      { agent: { session: { id: 's1' } }, turn: 1, signal: new AbortController().signal },
-      enter([existing]),
-    )
+    const existing = userMessage()
+    const { payload, next } = step([existing])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
     expect(decision.messages).toEqual([existing])
   })
 
@@ -131,10 +218,8 @@ describe('registerContextInjection', () => {
     const ctx = fakeCtx()
     registerContextInjection(ctx as never)
     syncRefs('s1', [photo()])
-    const decision = await ctx.get('agent/pre-step')!(
-      { agent: { session: { id: 's1' } }, turn: 1, signal: new AbortController().signal },
-      async () => ({ kind: 'reject' }),
-    )
+    const { payload } = step([userMessage()])
+    const decision = await ctx.get('agent/pre-step')!(payload, async () => ({ kind: 'reject' }))
     expect(decision).toEqual({ kind: 'reject' })
     // And the refs were NOT spent by the rejected step: a later turn still finds
     // them, which is what makes a vetoed step cost the user nothing.
@@ -145,12 +230,26 @@ describe('registerContextInjection', () => {
     const ctx = fakeCtx()
     registerContextInjection(ctx as never)
     syncRefs('s1', [photo()])
-    const payload = { agent: { session: { id: 's1' } }, turn: 7, signal: new AbortController().signal }
 
-    const first = await ctx.get('agent/pre-step')!(payload, enter([]))
-    const second = await ctx.get('agent/pre-step')!(payload, enter([]))
-    expect(first.messages).toHaveLength(1)
+    const opening = step([userMessage()])
+    const first = await ctx.get('agent/pre-step')!(opening.payload, opening.next)
+    const continuation = step([])
+    const second = await ctx.get('agent/pre-step')!(continuation.payload, continuation.next)
+    expect(first.messages).toHaveLength(2)
     expect(second.messages).toHaveLength(0)
+  })
+
+  it('injects the same set only once, however many steps carry user input', async () => {
+    const ctx = fakeCtx()
+    registerContextInjection(ctx as never)
+    syncRefs('s1', [photo()])
+
+    const opening = step([userMessage()])
+    const first = await ctx.get('agent/pre-step')!(opening.payload, opening.next)
+    const steered = step([userMessage('steer')])
+    const second = await ctx.get('agent/pre-step')!(steered.payload, steered.next)
+    expect(first.messages).toHaveLength(2)
+    expect(second.messages).toHaveLength(1)
   })
 
   it('drops a disposed session\'s pending refs', async () => {
@@ -159,10 +258,8 @@ describe('registerContextInjection', () => {
     syncRefs('s1', [photo()])
     ctx.get('session/disposed')!({ id: 's1' })
 
-    const decision = await ctx.get('agent/pre-step')!(
-      { agent: { session: { id: 's1' } }, turn: 1, signal: new AbortController().signal },
-      enter([]),
-    )
-    expect(decision.messages).toHaveLength(0)
+    const { payload, next } = step([userMessage()])
+    const decision = await ctx.get('agent/pre-step')!(payload, next)
+    expect(decision.messages).toHaveLength(1)
   })
 })

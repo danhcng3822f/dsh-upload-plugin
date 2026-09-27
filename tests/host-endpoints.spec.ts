@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
-  handleCheckVision, handleListUploads, handleSyncRefs, handleUpload, handleViewFile,
+  handleCheckVision, handleListUploads, handleReadRefs, handleSyncRefs, handleUpload, handleViewFile,
 } from '../src/host/endpoints.ts'
 import { claimRefs, clearRefs } from '../src/host/refs-store.ts'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
@@ -155,5 +155,72 @@ describe('handleSyncRefs', () => {
   it('refuses without recording anything', async () => {
     await handleSyncRefs({ sessionId: 's1', refs: 'nope' })
     expect(claimRefs('s1')).toBeUndefined()
+  })
+})
+
+/**
+ * The read half of the refs endpoint: what the host holds for a session, right
+ * now. This is the difference between "the client never pushed" and "the host
+ * never injected" being one request instead of an afternoon of inference.
+ */
+describe('handleReadRefs', () => {
+  beforeEach(() => { clearRefs('s1') })
+
+  it('reports a session the host never heard of as empty and unspent', async () => {
+    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false })
+  })
+
+  // Echoing the id is what makes a mistyped query parameter visible: the caller
+  // sees '' come back rather than reading "nothing held" as a client failure.
+  it('echoes the session id it was asked about, empty when none was given', async () => {
+    expect(await handleReadRefs(undefined)).toEqual({ sessionId: '', refs: [], spent: false })
+    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false })
+  })
+
+  it('reports exactly what a push left held', async () => {
+    await handleSyncRefs({
+      sessionId: 's1',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    expect(await handleReadRefs('s1')).toEqual({
+      sessionId: 's1',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+      spent: false,
+    })
+  })
+
+  it('reports the set as spent once a step claimed it', async () => {
+    await handleSyncRefs({
+      sessionId: 's1',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    claimRefs('s1')
+    const read = await handleReadRefs('s1')
+    expect(read.spent).toBe(true)
+    expect(read.refs).toHaveLength(1)
+  })
+
+  // A diagnostic that spent the set would break the very turn it was run to
+  // explain, and one that re-armed it would re-inject an attachment twice.
+  it('does not spend the set it reports', async () => {
+    await handleSyncRefs({
+      sessionId: 's1',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    await handleReadRefs('s1')
+    expect(claimRefs('s1')).toHaveLength(1)
+    await handleReadRefs('s1')
+    expect(claimRefs('s1')).toBeUndefined()
+  })
+
+  // The two halves must agree, or the diagnostic measures something other than
+  // what the injection will do.
+  it('agrees with what a committed send cleared', async () => {
+    await handleSyncRefs({
+      sessionId: 's1',
+      refs: [{ ref: 'a', relativePath: 'uploads/s/a.txt', isPhoto: false }],
+    })
+    await handleSyncRefs({ sessionId: 's1', refs: [] })
+    expect(await handleReadRefs('s1')).toEqual({ sessionId: 's1', refs: [], spent: false })
   })
 })

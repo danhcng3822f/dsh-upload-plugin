@@ -112,14 +112,70 @@ export declare function contextMessage(refs: readonly PendingAttachment[]): Visi
 /**
  * Register the pre-step injection on the plugin's context.
  *
- * The handler is idempotent per turn, not merely one-shot: `pre-step` runs once
- * per STEP, and a turn that calls tools proposes several. `claimRefs` both hands
- * over the refs and marks them spent for that turn, so a second step of the same
- * turn injects nothing — see the marker's own note in `src/host/refs-store.ts`.
+ * ## Which step may claim
  *
- * `signal.throwIfAborted()` sits between `next()` and the mutation for the same
- * reason it does in `tool-skill` and `time-context`: a cancelled turn must not
- * gain a message.
+ * `pre-step` runs once per STEP, and a turn that calls tools proposes several
+ * (`core/agent-loop/src/agent.ts:263-266`), so a step is not automatically the
+ * user's. The payload's `messages` is the batch the loop just removed from the
+ * inbox *for this step* (`core/agent/src/runtime-types.ts:224`), and its shape
+ * is pinned by the loop's own tests (`core/agent-loop/tests/interception.spec.ts:103-106`):
+ *
+ * - the step that opens a turn claims the queued prompt — `{ turn: 1, step: 1, messages: 1 }`;
+ * - every continuation step of that turn claims nothing — `{ turn: 1, step: 2, messages: 0 }`;
+ * - a `steer` lands in `next-step` (`agent.ts:126-128`) and is claimed by the
+ *   next continuation step, alongside whatever was `inject`ed with it.
+ *
+ * So the rule is: **claim only on a step that carries the user's own input** —
+ * a message whose `source.kind` is `'user'` (the kind the composer and the
+ * steering path both mint: `acp/src/index.ts:385`). Every other step leaves the
+ * set alone for the step that does carry it.
+ *
+ * ## Why not `decision.messages`
+ *
+ * The check reads the PAYLOAD's `messages`, not the decision's. The decision is
+ * the waterfall's OUTPUT: the loop's default appends a runtime-context snapshot
+ * to it (`agent.ts:236-239`) and any downstream listener may append its own
+ * (`time-context` does so on every step, `tool-skill` appends a catalog), so the
+ * last element of `decision.messages` is frequently another plugin's message
+ * rather than the user's. The payload's list is the claimed batch and nothing
+ * else, which is also how the harness's own readers use it
+ * (`goal-round-driver/src/index.ts:350`, `tool-skill/src/index.ts:183`).
+ *
+ * ## Ordering
+ *
+ * `next()` runs first so a `reject` is passed through untouched and a rejected
+ * step spends nothing; `signal.throwIfAborted()` sits between `next()` and the
+ * mutation for the same reason it does in `tool-skill` and `time-context` — a
+ * cancelled turn must not gain a message.
  * @param ctx - the plugin's context.
  */
 export declare function registerContextInjection(ctx: Context): void;
+/**
+ * The one field the claim rule reads off a message: where it came from.
+ *
+ * Structural rather than the harness's `UserMessage`, for the reason
+ * `src/host/llm-modules.d.ts` records: the harness packages are not installed
+ * beside this plugin, so their specifiers do not resolve from a real module. The
+ * declared payload type is the harness's own `UserMessage`
+ * (`llm-modules.d.ts`, `agent/pre-step`), whose `source` is a union that every
+ * member of which carries a string `kind` — so this narrowing accepts exactly
+ * the values the real field can hold.
+ */
+interface SourcedMessage {
+    readonly source: {
+        readonly kind: string;
+    };
+}
+/**
+ * Whether the batch claimed for one step holds the user's own input.
+ *
+ * `'user'` is the source kind of everything the user typed — a queued prompt and
+ * a mid-turn `steer` alike — and of nothing else. The plugin's own injection
+ * deliberately uses a different kind (`VISION_ATTACHMENT_KIND`), so a step
+ * carrying only context injections can never claim, and neither can a
+ * goal-round or subagent message.
+ * @param messages - the step's claimed batch, as `agent/pre-step` reports it.
+ * @returns whether this step is one the user's input enters on.
+ */
+export declare function carriesUserInput(messages: readonly SourcedMessage[]): boolean;
+export {};

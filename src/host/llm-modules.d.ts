@@ -188,9 +188,13 @@ declare module '@deepseek-ai/cordis' {
      * payload declares only that path. Under-promising the payload cannot mask a
      * call-site error: every field read here is present in the real `Agent`.
      *
-     * `messages`, `turn` and `step` are declared because they are part of the
-     * real payload and a handler may read them; this one does not, which is why
-     * the unused parameters are omitted at the call site rather than faked.
+     * `messages` and `step` are declared because they are part of the real
+     * payload and the claim rule reads them: `messages` is the batch the loop
+     * removed from the inbox for THIS step (`runtime-types.ts:224`), which is how
+     * a continuation step of another turn's step loop is told apart from the step
+     * that carries the user's own input (`context-injection.ts`,
+     * `carriesUserInput`). `turn` is declared for the same completeness; this
+     * handler does not read it.
      */
     'agent/pre-step'(
       this: unknown,

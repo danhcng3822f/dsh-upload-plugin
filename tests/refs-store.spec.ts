@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  claimRefs, clearRefs, parsePendingAttachment, syncRefs,
+  claimRefs, clearRefs, parsePendingAttachment, readRefs, syncRefs,
 } from '../src/host/refs-store.js'
 import type { PendingAttachment } from '../src/types.js'
 
@@ -91,6 +91,58 @@ describe('syncRefs / claimRefs', () => {
   it('drops a session on clear', () => {
     syncRefs('s1', [photo()])
     clearRefs('s1')
+    expect(claimRefs('s1')).toBeUndefined()
+  })
+})
+
+describe('readRefs', () => {
+  // The diagnostic's whole point: after attaching a file and sending, this says
+  // whether the client failed to push (empty) or the host failed to inject
+  // (non-empty and unspent) — instead of an afternoon of inference.
+  it('reports an absent session as an empty, unspent set', () => {
+    expect(readRefs('never-pushed')).toEqual({ refs: [], spent: false })
+  })
+
+  it('reports exactly what a push left held', () => {
+    syncRefs('s1', [photo(), file()])
+    expect(readRefs('s1')).toEqual({ refs: [photo(), file()], spent: false })
+  })
+
+  it('reports the set as spent once a step claimed it', () => {
+    syncRefs('s1', [photo()])
+    claimRefs('s1')
+    expect(readRefs('s1')).toEqual({ refs: [photo()], spent: true })
+  })
+
+  it('reports an empty set after a committed send cleared the draft', () => {
+    syncRefs('s1', [photo()])
+    syncRefs('s1', [])
+    expect(readRefs('s1')).toEqual({ refs: [], spent: false })
+  })
+
+  it('reports an absent session after disposal', () => {
+    syncRefs('s1', [photo()])
+    clearRefs('s1')
+    expect(readRefs('s1')).toEqual({ refs: [], spent: false })
+  })
+
+  // Reading is not claiming: a diagnostic that spent the set would break the
+  // very turn it was run to explain.
+  it('does not spend the set, and does not re-arm it either', () => {
+    syncRefs('s1', [photo()])
+    readRefs('s1')
+    expect(claimRefs('s1')).toEqual([photo()])
+    readRefs('s1')
+    expect(claimRefs('s1')).toBeUndefined()
+  })
+
+  it('hands over a copy, so a caller cannot mutate the held set', () => {
+    syncRefs('s1', [photo()])
+    expect(claimRefs('s1')).toEqual([photo()])
+    // If the read handed back the held array itself, this push would make the
+    // identical re-push below look like a NEW set and re-arm it.
+    readRefs('s1').refs.push(file())
+    syncRefs('s1', [photo()])
     expect(claimRefs('s1')).toBeUndefined()
   })
 })

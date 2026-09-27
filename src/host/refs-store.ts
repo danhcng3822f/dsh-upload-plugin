@@ -74,6 +74,9 @@ export function syncRefs(sessionId: string, refs: readonly PendingAttachment[]):
  * once per STEP, not once per turn (`core/agent-loop/src/agent.ts:266` calls it
  * inside the `while (true)` step loop), so a turn that calls tools asks several
  * times, and "inject once per turn that has refs" has to hold across all of them.
+ * The caller is what keeps a step of an UNRELATED turn from asking at all — see
+ * the claim rule in `src/host/context-injection.ts`, which only lets a step that
+ * carries the user's own input reach this function.
  * @param sessionId - the session whose turn is starting.
  * @returns the refs to inject, or undefined when the set is empty or already spent.
  */
@@ -83,6 +86,29 @@ export function claimRefs(sessionId: string): PendingAttachment[] | undefined {
   if (current.spent) return undefined
   current.spent = true
   return [...current.refs]
+}
+
+/**
+ * What the host holds for one session right now — the read half of the sync.
+ *
+ * This exists to make a failed attachment decidable in one request. After
+ * attaching a file and sending, an empty `refs` says the CLIENT never got the set
+ * to the host; a non-empty unspent set says the host holds it and no step has
+ * claimed it; a spent set says a step claimed it and the injection is in the
+ * log. Without it, all three look identical from the chat window.
+ *
+ * It reads the in-memory map and nothing else: no paths beyond what a push
+ * already recorded, no mutation, and no effect on the one-shot guarantee — a
+ * read neither spends a set nor re-arms one. An absent session is an empty,
+ * unspent set rather than an error, because "the host holds nothing" is exactly
+ * the answer a caller is usually asking for.
+ * @param sessionId - the session to describe.
+ * @returns the held set, oldest first, and whether it has been injected.
+ */
+export function readRefs(sessionId: string): { refs: PendingAttachment[]; spent: boolean } {
+  const current = sessions.get(sessionId)
+  if (current === undefined) return { refs: [], spent: false }
+  return { refs: [...current.refs], spent: current.spent }
 }
 
 /**

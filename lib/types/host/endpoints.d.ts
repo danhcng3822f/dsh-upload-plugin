@@ -1,4 +1,4 @@
-import type { FileUploadResponse, SyncRefsResponse, UploadListResponse, VisionCheckResponse } from '../types.js';
+import type { FileUploadResponse, ReadRefsResponse, SyncRefsResponse, UploadListResponse, VisionCheckResponse } from '../types.js';
 export declare function handleCheckVision(llm: any, provider?: string, model?: string): Promise<VisionCheckResponse>;
 export declare function handleUpload(workspaceDir: string, originalName: string, base64Data: string, isPhoto: boolean, sessionId?: string): Promise<FileUploadResponse>;
 export declare function handleListUploads(workspaceDir: string, sessionId?: string): Promise<UploadListResponse>;
@@ -20,6 +20,22 @@ export declare function handleListUploads(workspaceDir: string, sessionId?: stri
  * @returns the outcome, with the count the host now holds for the session.
  */
 export declare function handleSyncRefs(payload: unknown): Promise<SyncRefsResponse>;
+/**
+ * Read the host's view of one session's refs (R29).
+ *
+ * The write half — `handleSyncRefs` — answers only "how many do you hold now",
+ * which is not enough to tell a failed push from a failed injection after the
+ * fact. This is the read half: the held set and its spent flag, so one request
+ * after a send says which half of the feature broke.
+ *
+ * It is total rather than validating: a missing or unknown `sessionId` answers
+ * the empty, unspent set, and the echoed `sessionId` is what tells the caller
+ * the parameter arrived. A 400 here would be one more thing to decode while
+ * diagnosing, which is the cost this endpoint exists to remove.
+ * @param sessionId - the session from the query string, or undefined when absent.
+ * @returns what the store holds for that session right now.
+ */
+export declare function handleReadRefs(sessionId: string | undefined): Promise<ReadRefsResponse>;
 export declare function handleViewFile(workspaceDir: string, relFile: string): Promise<{
     found: boolean;
     buffer?: Buffer;

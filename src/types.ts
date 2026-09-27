@@ -69,6 +69,23 @@ export interface SyncRefsResponse {
   error?: string
 }
 
+/**
+ * What the ref-sync endpoint answers to a GET: the host's own view of a session.
+ *
+ * The same three facts a diagnosis needs — which session was asked about, what
+ * the host holds, and whether a step has already injected it — and nothing else:
+ * no file paths beyond the ones a push already carried, and no session
+ * enumeration.
+ */
+export interface ReadRefsResponse {
+  /** Echoed back, so a mistyped query parameter is visible rather than silent. */
+  sessionId: string
+  /** The held set, oldest first; empty for a session the host never heard of. */
+  refs: PendingAttachment[]
+  /** Whether a step has already claimed this set and injected it. */
+  spent: boolean
+}
+
 export interface AttachedItem {
   id: string
   name: string
